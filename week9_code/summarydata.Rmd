@@ -1,0 +1,56 @@
+---
+title: "summarydata"
+output: html_document
+---
+
+```{r}
+library(readxl)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(scales)
+```
+
+Importing the Data
+
+```{r}
+file_path <- "data/bullets_2024.xlsx"
+
+kq_data <- read_excel(file_path, sheet = "KQ responses (n=1575)")
+qq_data <- read_excel(file_path, sheet = "QQ responses (n=1581)")
+cset_data <- read_excel(file_path, sheet = "Cset (n=1240)")
+```
+
+Data Cleaning
+
+```{r}
+phase_label <- "Primary (Baseline)"
+
+kq <- kq_data %>%
+  filter(Phase == phase_label) %>%
+  mutate(
+    Decision = if_else(K01_Q1value == "NoValue", "NoValue", K08_Conclusion),
+    Comparison = "KQ"
+  ) %>%
+  select(AnonID, Cset, Mating, Decision, Comparison, K09_Difficulty) %>% rename(Difficulty = K09_Difficulty)
+
+qq <- qq_data %>%
+  filter(Phase == phase_label) %>%
+  mutate(
+    Decision = if_else(Q01_Q1value == "NoValue" | Q02_Q2value == "NoValue", "NoValue", Q08_Conclusion),
+    Comparison = "QQ"
+  ) %>%
+  select(AnonID, Cset, Mating, Decision, Comparison, Q09_Difficulty) %>% rename(Difficulty = Q09_Difficulty)
+
+cset <- cset_data %>%select( Cset, Type,`Cset Category (Detailed)`, `Cset Quality (voted)` ) %>%
+  rename(Category = `Cset Category (Detailed)`, CsetQuality = `Cset Quality (voted)` )
+
+responses <- bind_rows(kq, qq) %>%
+  left_join(cset, by = "Cset") %>%
+  mutate(Category = str_squish(Category), Decision = factor(Decision, levels = c("ID", "LeanID", "Insuff", "NoValue", "LeanExcl", "Excl")))
+```
+
+```{r}
+responses %>% summarise(CsetQuality, Decision)
+```
+

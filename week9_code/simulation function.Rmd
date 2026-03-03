@@ -1,0 +1,24 @@
+---
+title: "simulation function"
+output: html_document
+---
+Goal: simulate a data set with
+Examiner ID - each examiner has different skill level 	
+Ground Truth: Mated or Non-mated
+KQ or QQ
+Cset ID - each c set has different difficulty
+P (Inconclusive)	Simulated Y results are Identification, lean Identification, Inconclusive, Lean Exclusion, Exclusion 
+
+The data set will include 50 KQ set (25 mated cset, 25 non mated cset) and 50 QQ set(25 mated cset, 25 non mated cset), and 30 examiners
+
+difficulty: very easy, easy, medium, difficult, very difficult 
+higher difficulty contributes to inconclusive proportion and incorrect direction 
+Examiner skill: low, high, medium 
+higher examiner skill contributes to lower inconclusive proportion and correct direction
+Evidence quality: A, B, C, D
+for KQ set there are always known quanlity with A degree examiner quality
+higher quality contributes to lower inconclusive rate
+
+simulate examiner's response based on above influencing factors to following results: Identification, lean Identification, Inconclusive, Lean Exclusion, Exclusion 
+
+one_simulation<-function(per_diff = c(0.25, 0.25,0.25,0.25,0.25), per_exam_skill = c(0.33,0.33,0.33), per_quality=c(0.25, 0.25,0.25,0.25,0.25))
