@@ -10,15 +10,349 @@ Cset ID - each c set has different difficulty
 P (Inconclusive)	Simulated Y results are Identification, lean Identification, Inconclusive, Lean Exclusion, Exclusion 
 
 The data set will include 50 KQ set (25 mated cset, 25 non mated cset) and 50 QQ set(25 mated cset, 25 non mated cset), and 30 examiners
-
-difficulty: very easy, easy, medium, difficult, very difficult 
+The data set will simulate based on below properties: 
+1. difficulty: very easy, easy, medium, difficult, very difficult 
 higher difficulty contributes to inconclusive proportion and incorrect direction 
-Examiner skill: low, high, medium 
+2. Examiner skill: low, high, medium 
 higher examiner skill contributes to lower inconclusive proportion and correct direction
-Evidence quality: A, B, C, D
+3. Evidence quality: A, B, C, D
 for KQ set there are always known quanlity with A degree examiner quality
 higher quality contributes to lower inconclusive rate
-
+4. Hawthorne effect level: 0 0.1 0.3 0.5
 simulate examiner's response based on above influencing factors to following results: Identification, lean Identification, Inconclusive, Lean Exclusion, Exclusion 
 
-one_simulation<-function(per_diff = c(0.25, 0.25,0.25,0.25,0.25), per_exam_skill = c(0.33,0.33,0.33), per_quality=c(0.25, 0.25,0.25,0.25,0.25))
+one_simulation<-function(per_diff = c(0.25, 0.25,0.25,0.25,0.25), per_exam_skill = c(0.33,0.33,0.33), per_quality=c(0.25, 0.25,0.25,0.25,0.25), Hawthorne = haw_level, )
+Use per_diff to set the percentage of difficulty of 5 levels in the simulation; use per_exam_skill to set the percentage of examiners' level in three levels; use per_quality to set the percentage of each quality level in the simulation. 
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(tibble)
+
+logit <- function(p) log(p/(1-p))
+invlogit <- function(x) 1/(1+exp(-x))
+clip01 <- function(x, lo = 1e-6, hi = 1 - 1e-6) pmin(hi, pmax(lo, x))
+
+difficulty_levels <- c("VeryEasy","Easy","Medium","Difficult","VeryDifficult")
+skill_levels <- c("Low","Medium","High")
+quality_levels <- c("D","C","B","A") # ordered worst -> best
+
+difficulty_score <- function(x) match(x, difficulty_levels) - 3
+skill_score <- function(x) match(x, skill_levels) - 2
+quality_score <- function(x) match(x, quality_levels) - 2.5
+```
+
+
+```{r}
+simulate_decisions <- function(dat,
+                               Hawthorne = 0,
+                               seed = 1,
+                               # direction model (separate from strength)
+                               p_correct_dir_base = 0.80,
+                               beta_diff_dir  = -0.35,   # harder -> less correct
+                               beta_skill_dir =  0.45,   # higher skill -> more correct
+                               beta_qual_dir  =  0.20,   # higher quality -> more correct
+                               # combined strength score S
+                               beta_diff_strength  = 0.50,  # harder lowers S
+                               beta_skill_strength = 0.60,  # higher skill raises S
+                               beta_qual_strength  = 0.50,  # higher quality raises S
+                               t_insuff = -0.6,             # S < t_insuff => Insuff
+                               t_strong =  0.6,             # S >= t_strong => Strong (else Lean)
+                               sd_strength_noise = 0.6      # noise on S
+) {
+  set.seed(seed)
+  stopifnot(t_insuff < t_strong)
+  stopifnot(Hawthorne >= 0 && Hawthorne <= 1)
+
+  # numeric scores
+  d_sc <- difficulty_score(as.character(dat$Difficulty))
+  s_sc <- skill_score(as.character(dat$Skill))
+  q_sc <- quality_score(as.character(dat$Quality))
+
+  # -----------------------
+  # 1) Direction (ID-side vs Excl-side) via correctness
+  # -----------------------
+  eta_correct <- logit(p_correct_dir_base) +
+    beta_diff_dir  * d_sc +
+    beta_skill_dir * s_sc +
+    beta_qual_dir  * q_sc
+
+  p_correct <- invlogit(eta_correct) |> clip01(0.01, 0.99)
+  correct_dir <- rbinom(nrow(dat), 1, p_correct) == 1
+
+  # correct direction means:
+  # - Mated => ID-side
+  # - Nonmated => Excl-side
+  is_mated <- dat$GroundTruth == "Mated"
+  id_side <- ifelse(is_mated, correct_dir, !correct_dir)
+
+  # -----------------------
+  # 2) Strength score S -> Insuff vs Lean vs Strong
+  # -----------------------
+  S <- 0 +
+    (-beta_diff_strength)  * d_sc +
+    ( beta_skill_strength) * s_sc +
+    ( beta_qual_strength)  * q_sc +
+    rnorm(nrow(dat), 0, sd_strength_noise)
+
+  is_insuff <- S < t_insuff
+  is_strong <- S >= t_strong
+  is_lean   <- (!is_insuff) & (!is_strong)
+
+  # sanity: each row must be exactly one tier
+  stopifnot(all(is_insuff + is_lean + is_strong == 1))
+
+  # -----------------------
+  # 3) Map to decisions (Undiscovered)
+  # -----------------------
+  Decision_U <- character(nrow(dat))
+  Decision_U[is_insuff] <- "Insuff"
+
+  idx_nonins <- which(!is_insuff)
+
+  idx_lean <- idx_nonins[is_lean[idx_nonins]]
+  if (length(idx_lean) > 0) {
+    Decision_U[idx_lean] <- ifelse(id_side[idx_lean], "LeanID", "LeanExcl")
+  }
+
+  idx_str <- idx_nonins[is_strong[idx_nonins]]
+  if (length(idx_str) > 0) {
+    Decision_U[idx_str] <- ifelse(id_side[idx_str], "ID", "Excl")
+  }
+
+  # -----------------------
+  # 4) Hawthorne effect: flip fraction of Insuff -> definitive
+  # -----------------------
+  Decision_D <- Decision_U
+  inc_idx <- which(Decision_U == "Insuff")
+  n_flip <- floor(Hawthorne * length(inc_idx))
+
+  if (n_flip > 0) {
+    flip_idx <- sample(inc_idx, n_flip, replace = FALSE)
+    def <- Decision_U[Decision_U != "Insuff"]
+
+    if (length(def) > 0) {
+      probs <- prop.table(table(def))
+      Decision_D[flip_idx] <- sample(
+        names(probs),
+        size = length(flip_idx),
+        replace = TRUE,
+        prob = as.numeric(probs)
+      )
+    }
+  }
+
+  dat %>%
+    mutate(
+      StrengthScore = S,
+      P_CorrectDir = p_correct,
+      Decision_U = factor(Decision_U, levels = c("ID","LeanID","Insuff","LeanExcl","Excl")),
+      Decision_D = factor(Decision_D, levels = c("ID","LeanID","Insuff","LeanExcl","Excl"))
+    )
+}
+```
+
+```{r}
+one_simulation <- function(
+  per_diff = rep(0.2, 5),
+  per_exam_skill = rep(1/3, 3),
+  per_quality = rep(0.25, 4),
+  Hawthorne = 0,
+  seed = 1,
+  n_examiners = 30,
+  nKQ = 50,
+  nQQ = 50
+) {
+  set.seed(seed)
+
+  stopifnot(length(per_diff) == 5, abs(sum(per_diff) - 1) < 1e-8)
+  stopifnot(length(per_exam_skill) == 3, abs(sum(per_exam_skill) - 1) < 1e-8)
+  stopifnot(length(per_quality) == 4, abs(sum(per_quality) - 1) < 1e-8)
+
+  # --- csets ---
+  cset <- bind_rows(
+    tibble(CsetID = paste0("KQ_", sprintf("%03d", 1:nKQ)), ModelType = "KQ"),
+    tibble(CsetID = paste0("QQ_", sprintf("%03d", 1:nQQ)), ModelType = "QQ")
+  ) %>%
+    group_by(ModelType) %>%
+    mutate(GroundTruth = c(rep("Mated", 25), rep("Nonmated", 25))) %>%
+    ungroup()
+
+  cset$Difficulty <- sample(difficulty_levels, nrow(cset), replace = TRUE, prob = per_diff)
+
+  cset$Quality <- ifelse(
+    cset$ModelType == "KQ",
+    "A",
+    sample(c("A","B","C","D"), nrow(cset), replace = TRUE, prob = per_quality)
+  )
+
+  cset <- cset %>%
+    mutate(
+      ModelType = factor(ModelType, levels = c("KQ","QQ")),
+      GroundTruth = factor(GroundTruth, levels = c("Nonmated","Mated")),
+      Difficulty = factor(Difficulty, levels = difficulty_levels, ordered = TRUE),
+      # IMPORTANT: your quality_levels are D,C,B,A so we convert A/B/C/D into that order
+      Quality = factor(Quality, levels = c("D","C","B","A"), ordered = TRUE)
+    )
+
+  # --- examiners ---
+  exam <- tibble(
+    ExaminerID = paste0("E", sprintf("%02d", 1:n_examiners)),
+    Skill = sample(skill_levels, n_examiners, replace = TRUE, prob = per_exam_skill)
+  ) %>%
+    mutate(Skill = factor(Skill, levels = skill_levels, ordered = TRUE))
+
+  # --- responses grid ---
+  dat <- tidyr::crossing(exam, cset)
+
+  # --- decisions ---
+  simulate_decisions(dat, Hawthorne = Hawthorne, seed = seed + 100)
+}
+```
+
+```{r}
+sim_data <- one_simulation(
+  per_diff = c(0.1,0.2,0.4,0.2,0.1),
+  per_exam_skill = c(0.3,0.4,0.3),
+  per_quality = c(0.25,0.25,0.25,0.25),
+  Hawthorne = 0.3,
+  seed = 123
+)
+
+head(sim_data)
+table(sim_data$Decision_U)
+table(sim_data$Decision_D)
+```
+
+```{r}
+# -------------------------------
+# Error rates + Bootstrap helpers
+# -------------------------------
+
+# Compute FP, FN, overall error, and inconclusive rate
+# decision_col should be "Decision_U" or "Decision_D"
+compute_error_rates <- function(dat, decision_col = "Decision_D") {
+  dec <- dat[[decision_col]]
+
+  fp <- mean(dat$GroundTruth == "Nonmated" & dec %in% c("ID","LeanID"))
+  fn <- mean(dat$GroundTruth == "Mated"    & dec %in% c("Excl","LeanExcl"))
+  err <- mean(
+    (dat$GroundTruth == "Nonmated" & dec %in% c("ID","LeanID")) |
+      (dat$GroundTruth == "Mated"  & dec %in% c("Excl","LeanExcl"))
+  )
+  inc <- mean(dec == "Insuff")
+
+  data.frame(FP = fp, FN = fn, Error = err, Inconclusive = inc)
+}
+
+# Generic bootstrap engine for a scalar statistic
+# method = "row" | "examiner" | "cset"
+bootstrap_ci <- function(dat,
+                         stat_fun,
+                         method = c("row","examiner","cset"),
+                         B = 2000,
+                         seed = 1,
+                         cluster_var_examiner = "ExaminerID",
+                         cluster_var_cset = "CsetID") {
+  method <- match.arg(method)
+  set.seed(seed)
+
+  n <- nrow(dat)
+  vals <- numeric(B)
+
+  if (method == "row") {
+    for (b in 1:B) {
+      idx <- sample.int(n, n, replace = TRUE)
+      vals[b] <- stat_fun(dat[idx, , drop = FALSE])
+    }
+  }
+
+  if (method == "examiner") {
+    clusters <- unique(dat[[cluster_var_examiner]])
+    idx_by <- split(seq_len(n), dat[[cluster_var_examiner]])
+    for (b in 1:B) {
+      samp <- sample(clusters, length(clusters), replace = TRUE)
+      idx <- unlist(idx_by[samp], use.names = FALSE)
+      vals[b] <- stat_fun(dat[idx, , drop = FALSE])
+    }
+  }
+
+  if (method == "cset") {
+    clusters <- unique(dat[[cluster_var_cset]])
+    idx_by <- split(seq_len(n), dat[[cluster_var_cset]])
+    for (b in 1:B) {
+      samp <- sample(clusters, length(clusters), replace = TRUE)
+      idx <- unlist(idx_by[samp], use.names = FALSE)
+      vals[b] <- stat_fun(dat[idx, , drop = FALSE])
+    }
+  }
+
+  ci <- quantile(vals, c(0.025, 0.975), na.rm = TRUE)
+
+  list(
+    method = method,
+    B = B,
+    boot_values = vals,
+    mean = mean(vals, na.rm = TRUE),
+    sd = sd(vals, na.rm = TRUE),
+    lo = unname(ci[1]),
+    hi = unname(ci[2])
+  )
+}
+
+# ---------------------------------------------------------
+# Combined function: simulate + bootstrap CI for error rate
+# ---------------------------------------------------------
+simulate_and_bootstrap <- function(
+  bootstrap_method = c("row","examiner","cset"),
+  decision_col = "Decision_D",
+  B = 2000,
+  seed = 123,
+
+  # pass-through args to one_simulation()
+  per_diff = rep(0.2, 5),
+  per_exam_skill = rep(1/3, 3),
+  per_quality = rep(0.25, 4),
+  Hawthorne = 0,
+  n_examiners = 30,
+  nKQ = 50,
+  nQQ = 50
+) {
+  bootstrap_method <- match.arg(bootstrap_method)
+
+  # 1) simulate dataset
+  dat <- one_simulation(
+    per_diff = per_diff,
+    per_exam_skill = per_exam_skill,
+    per_quality = per_quality,
+    Hawthorne = Hawthorne,
+    seed = seed,
+    n_examiners = n_examiners,
+    nKQ = nKQ,
+    nQQ = nQQ
+  )
+
+  # 2) point estimates (FP/FN/Error/Inc)
+  point <- compute_error_rates(dat, decision_col = decision_col)
+
+  # 3) bootstrap CI for overall Error rate (scalar)
+  stat_fun <- function(d) compute_error_rates(d, decision_col = decision_col)$Error
+
+  boot <- bootstrap_ci(
+    dat = dat,
+    stat_fun = stat_fun,
+    method = bootstrap_method,
+    B = B,
+    seed = seed + 999
+  )
+
+  # 4) return everything
+  list(
+    data = dat,
+    decision_col = decision_col,
+    point_estimates = point,
+    bootstrap = boot
+  )
+}
+```
+
