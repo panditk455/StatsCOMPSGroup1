@@ -1,0 +1,15 @@
+---
+title: "record"
+format: html
+---
+
+# A tibble: 2 × 8
+  statistic true_value coverage_rate mean_ci_width nominal_coverage     M     B bootstrap_method
+  <chr>          <dbl>         <dbl>         <dbl>            <dbl> <dbl> <dbl> <chr>           
+1 inc_rate      0.410           0.5         0.0602             0.95   100   100 examiner        
+2 err_rate      0.0896          0.81        0.0430             0.95   100   100 examiner   
+$true_parameters$true_inc_rate
+[1] 0.4101061
+
+$true_parameters$true_err_rate
+[1] 0.08956665

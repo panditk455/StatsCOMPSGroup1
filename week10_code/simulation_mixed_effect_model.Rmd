@@ -1,0 +1,1055 @@
+---
+title: "simulation_mixed_effect_model"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+Setting up a multi-level model for simulated data
+Idea
+  For each examiner–cset response, generate: 1) p_inconclusive . 2) $I_{ij} \sim Bernoulli(p_{ij}^{(I)})$
+  
+  $$
+  p_{ij}^{(I)}=\alpha_0 + \alpha_Ddj+\alpha_Ssi+\alpha_Qqj+\alpha_HH+u_i^{(I)}+v_j^{(I)}+e_{ij}^{(I)}
+  $$
+  
+  $\alpha_0$:the baseline error rate
+  $\alpha_D$: $\alpha_D \gt 0$ harder csets increase error
+  $\alpha_S$: $\alpha_S \lt 0$ more skilled examiners reduce error
+  $\alpha_Q$: $\alpha_Q  \lt 0$ better quality reduce error 
+  $\alpha_H$: $\alpha_Q  \gt 0$ Hawthrone effect on increase the inconslusives
+  $u_i\sim N(0,\sigma^2_{exam})$: some examiners are systematically more error-prone
+  $u_j\sim N(0,\sigma^2_{exam})$: some csets are systematically more error-prone
+  $e_{ij} \sim N(0,\sigma^2)$: extra noise
+  Then, only for rows that are not inconclusive, generate:1) p_error 2)$E_{ij}|I_{ij} \sim Bernoulli(p_{ij}^{(E)})$
+    $$
+  p_{ij}^{(E)}=\beta_0 + \beta_Ddj+\beta_Ssi+\beta_Qqj+\beta_HH+u_i^{(E)}+v_j^{(E)}+e_{ij}^{(E)}
+    $$
+    $\alpha_0$:the baseline error rate
+  $\alpha_D$: $\alpha_D \gt 0$ harder csets increase inconslusives
+  $\alpha_S$: $\alpha_S \lt 0$ more skilled examiners reduce inconslusives
+  $\alpha_Q$: $\alpha_Q  \lt 0$ better quality reduce inconslusives 
+  $u_i\sim N(0,\sigma^2_{exam})$: some examiners are systematically more inconslusives-prone
+  $u_j\sim N(0,\sigma^2_{exam})$: some csets are systematically more inconclusives-prone
+  $e_{ij} \sim N(0,\sigma^2)$: extra noise
+  
+```{r}
+library(readxl)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(lme4)
+library(tidyverse)
+
+file_path <- "data/bullets_2024.xlsx"
+
+kq_data <- read_excel(file_path, sheet = "KQ responses (n=1575)")
+qq_data <- read_excel(file_path, sheet = "QQ responses (n=1581)")
+cset_data <- read_excel(file_path, sheet = "Cset (n=1240)")
+exam_data <- read_excel(file_path, sheet = "Summary by Participant (n=49)",skip = 1)
+
+```
+
+Data Cleaning
+
+```{r}
+phase_label <- "Primary (Baseline)"
+
+kq <- kq_data %>%
+  filter(Phase == phase_label) %>%
+  mutate(
+    Decision = if_else(K01_Q1value == "NoValue", "NoValue", K08_Conclusion),
+    Comparison = "KQ"
+  ) %>%
+  select(AnonID, Cset, Mating, Decision, Comparison, K09_Difficulty) %>% rename(Difficulty = K09_Difficulty)
+
+qq <- qq_data %>%
+  filter(Phase == phase_label) %>%
+  mutate(
+    Decision = if_else(Q01_Q1value == "NoValue" | Q02_Q2value == "NoValue", "NoValue", Q08_Conclusion),
+    Comparison = "QQ"
+  ) %>%
+  select(AnonID, Cset, Mating, Decision, Comparison, Q09_Difficulty) %>% rename(Difficulty = Q09_Difficulty)
+
+cset <- cset_data %>%select( Cset, Type,`Cset Category (Detailed)`, `Cset Quality (voted)` ) %>%
+  rename(Category = `Cset Category (Detailed)`, CsetQuality = `Cset Quality (voted)` )
+
+responses <- bind_rows(kq, qq) %>%
+  left_join(cset, by = "Cset") %>%
+  mutate(Category = str_squish(Category), Decision = factor(Decision, levels = c("ID", "LeanID", "Insuff", "NoValue", "LeanExcl", "Excl")))
+responses <- responses %>%
+  separate(CsetQuality,
+           into = c("Quality1", "Quality2"),
+           sep = ":",
+           remove = FALSE)
+
+# Exclude Anon ID that doesn have accuracy calculated
+exam_data %>% filter(Accuracy == 0) %>% pull("Participant (AnonID)") ->to_remove
+
+exam_data %>% 
+  filter(!`Participant (AnonID)` %in% to_remove) %>% 
+  select(Accuracy,`Participant (AnonID)`) ->exam_data
+
+responses_exam <- responses %>%
+  filter(!`AnonID` %in% to_remove)
+
+fit_responses <- left_join(responses_exam, exam_data, 
+                       by = c("AnonID" = "Participant (AnonID)"))
+responses <- responses %>%  mutate(
+    Inconclusive = ifelse(Decision == "Insuff", 1, 0)
+  )
+
+responses <-responses %>%
+  mutate(
+    Error = case_when(
+      Decision %in% c("Excl","LeanExcl") & Mating == "Mated" ~ 1,
+      Decision %in% c("ID","LeanID") & Mating == "Nonmated" ~ 1,
+      Decision == "Insuff" ~ NA_real_,
+      TRUE ~ 0
+    )
+  ) %>%  mutate(
+    Difficulty = na_if(Difficulty, "na")
+  )
+
+responses2 <- responses2 %>%
+  mutate(Difficulty = fct_collapse(
+    factor(Difficulty),
+    "Easy"  = c("VEasy", "Easy"),  
+    "Norm"  = "Norm",
+    "Diff"  = "Diff",
+    "VDiff" = "VDiff"
+  ))
+```
+
+
+```{r}
+fit_inc <- glmer(
+  Inconclusive ~ Difficulty + Quality1 + Quality2 +  (1 | AnonID) + (1 | Cset), # + Mating + Comparison
+  data = responses,
+  family = binomial
+)
+summary(fit_inc)
+
+fit_err <- glmer(
+  Error ~ Difficulty + Quality1 + Quality2 + (1 | AnonID), # + (1 | Cset)
+  data    = subset(responses2, Inconclusive == 0),
+  family  = binomial,
+  control = glmerControl(
+    optimizer = "bobyqa",
+    optCtrl   = list(maxfun = 2e5)
+  )
+)
+summary(fit_err)
+```
+
+```{r}
+# -----------------------------------------------------------------------------
+# 0.  Helpers
+inv_logit  <- function(x) 1 / (1 + exp(-x))
+clamp_prob <- function(p, lo = 1e-6, hi = 1 - 1e-6) pmax(lo, pmin(hi, p))
+
+# Factor level labels (used to label the simulated dataset)
+DIFF_LEVELS  <- c("VEasy", "Easy", "Norm", "Diff", "VDiff")
+QUAL1_LEVELS <- c("A", "B", "C")
+QUAL2_LEVELS <- c("A", "B", "C", "D")
+
+
+# -----------------------------------------------------------------------------
+# 1.  one_simulation()
+one_simulation <- function(
+
+    per_diff        = rep(0.2, 5),
+    per_exam_skill  = rep(1/3, 3),
+    per_quality1    = c(1/3, 1/3, 1/3),
+    per_quality2    = rep(0.25, 4),
+    Hawthorne       = 0,
+    n_examiners     = 30,
+    nKQ             = 50,
+    nQQ             = 50,
+    mated_prop      = 0.5,
+    seed            = NULL,
+
+    beta_inc = list(
+      # Intercept: log-odds of inconclusive at Diff / Q1=A / Q2=A, no Hawthorne
+      intercept =  0.1495,
+
+      # Difficulty offsets (order: VEasy, Easy, Norm, Diff[ref=0], VDiff)
+      diff      = c(-17.2028, -5.0423, -1.1706, 0.0000, 0.9113),
+
+      # Examiner skill offsets (Low[ref=0], Med, High)
+      # Not estimated in fit_inc — set to 0 or override to add a skill effect
+      skill     = c(0, 0, 0),
+
+      # Quality1 offsets (A[ref=0], B, C)
+      quality1  = c(0.0000, 0.5377, 1.6007),
+
+      # Quality2 offsets (A[ref=0], B, C, D)
+      quality2  = c(0.0000, 0.2857, 0.2219, 0.6841),
+
+      # Hawthorne coefficient (alpha_H); multiplied by the Hawthorne argument
+      hawthorne = 0.5
+    ),
+    sd_exam_inc = 1.1677,   # AnonID SD from fit_inc VarCorr
+    sd_cset_inc = 0.8605,   # Cset   SD from fit_inc VarCorr
+
+    # --- Error model: fitted from fit_err (bobyqa, responses2, no (1|Cset)) ---
+    beta_err = list(
+      # Intercept: log-odds of error at Diff / Q1=A / Q2=A
+      intercept = -2.2259,
+
+      # Difficulty offsets (order: VEasy, Easy, Norm, Diff[ref=0], VDiff)
+      # VEasy collapsed into Easy during model fitting (zero errors in VEasy);
+      # VEasy is assigned Easy's coefficient as the conservative default.
+      diff      = c(-3.0829, -3.0829, -0.6228, 0.0000, 0.5032),
+      #              VEasy    Easy     Norm     Diff    VDiff
+
+      # Examiner skill offsets — not in fit_err, kept at 0
+      # Override to add a skill effect: e.g. c(0.4, 0.0, -0.4) for Low/Med/High
+      skill     = c(0, 0, 0),
+
+      # Quality1 offsets (A[ref=0], B, C)
+      quality1  = c(0.0000, 0.1779, 1.4058),
+
+      # Quality2 offsets (A[ref=0], B, C, D)
+      quality2  = c(0.0000, 0.6122, 0.5528, 0.7438),
+
+      hawthorne = 0.0
+    ),
+    sd_exam_err = 0.9655,  # AnonID SD from fit_err VarCorr
+    sd_cset_err = 0.0      # (1|Cset) not included in fit_err
+
+) 
+{
+
+  if (!is.null(seed)) set.seed(seed)
+
+  stopifnot(
+    length(per_diff)       == 5,
+    length(per_exam_skill) == 3,
+    length(per_quality1)   == length(beta_inc$quality1),
+    length(per_quality2)   == length(beta_inc$quality2),
+    abs(sum(per_diff)       - 1) < 1e-8,
+    abs(sum(per_exam_skill) - 1) < 1e-8,
+    abs(sum(per_quality1)   - 1) < 1e-8,
+    abs(sum(per_quality2)   - 1) < 1e-8
+  )
+
+  n_csets <- nKQ + nQQ
+
+  # Step 1 — Simulate examiners
+  examiners <- tibble(
+    AnonID   = paste0("E", sprintf("%03d", seq_len(n_examiners))),
+    SkillIdx = sample(1:3, n_examiners, replace = TRUE, prob = per_exam_skill),
+    u_inc    = rnorm(n_examiners, 0, sd_exam_inc),
+    u_err    = rnorm(n_examiners, 0, sd_exam_err)
+  )
+
+
+  # Step 2 — Simulate csets
+  csets <- tibble(
+    Cset       = paste0("C", sprintf("%04d", seq_len(n_csets))),
+    Comparison = c(rep("KQ", nKQ), rep("QQ", nQQ)),
+    Mating     = sample(c("Mated", "Nonmated"), n_csets, replace = TRUE,
+                        prob = c(mated_prop, 1 - mated_prop)),
+    DiffIdx    = sample(1:5, n_csets, replace = TRUE, prob = per_diff),
+    Qual1Idx   = sample(seq_along(per_quality1), n_csets, replace = TRUE,
+                        prob = per_quality1),
+    Qual2Idx   = sample(seq_along(per_quality2), n_csets, replace = TRUE,
+                        prob = per_quality2),
+    Difficulty = DIFF_LEVELS[DiffIdx],
+    Quality1   = QUAL1_LEVELS[Qual1Idx],
+    Quality2   = QUAL2_LEVELS[Qual2Idx],
+    v_inc      = rnorm(n_csets, 0, sd_cset_inc),
+    v_err      = rnorm(n_csets, 0, sd_cset_err)
+  )
+
+
+  # Step 3 — Full crossed design  (every examiner sees every cset)
+
+  sim_data <- tidyr::crossing(
+    select(examiners, AnonID, SkillIdx, u_inc, u_err),
+    select(csets, Cset, Comparison, Mating,
+           DiffIdx, Qual1Idx, Qual2Idx,
+           Difficulty, Quality1, Quality2,
+           v_inc, v_err)
+  )
+
+  # Step 4 — Inconclusive outcome
+
+  sim_data <- sim_data %>%
+    mutate(
+      lp_inc =
+        beta_inc$intercept             +
+        beta_inc$diff[DiffIdx]         +
+        beta_inc$skill[SkillIdx]       +
+        beta_inc$quality1[Qual1Idx]    +
+        beta_inc$quality2[Qual2Idx]    +
+        beta_inc$hawthorne * Hawthorne +
+        u_inc + v_inc,
+
+      p_inc        = clamp_prob(inv_logit(lp_inc)),
+      Inconclusive = rbinom(n(), 1, p_inc)
+    )
+
+
+  # Step 5 — Error outcome  (conclusive rows only)
+
+  # NOTE: dplyr::if_else() evaluates BOTH branches for all rows before
+  # selecting, so passing p_err (NA for inconclusive rows) into rbinom()
+  # produces NAs. We compute lp_err/p_err/Error only on conclusive rows
+  # using a row index instead.
+  sim_data <- sim_data %>%
+    mutate(lp_err = NA_real_, p_err = NA_real_, Error = NA_integer_)
+
+  conclusive_idx <- which(sim_data$Inconclusive == 0)
+
+  sim_data$lp_err[conclusive_idx] <-
+    beta_err$intercept +
+    beta_err$diff[    sim_data$DiffIdx[ conclusive_idx]] +
+    beta_err$skill[   sim_data$SkillIdx[conclusive_idx]] +
+    beta_err$quality1[sim_data$Qual1Idx[conclusive_idx]] +
+    beta_err$quality2[sim_data$Qual2Idx[conclusive_idx]] +
+    beta_err$hawthorne * Hawthorne +
+    sim_data$u_err[conclusive_idx] +
+    sim_data$v_err[conclusive_idx]
+
+  sim_data$p_err[conclusive_idx] <-
+    clamp_prob(inv_logit(sim_data$lp_err[conclusive_idx]))
+
+  sim_data$Error[conclusive_idx] <-
+    rbinom(length(conclusive_idx), 1, sim_data$p_err[conclusive_idx])
+
+  # Step 6 — Reconstruct Decision (mirrors real data coding)
+
+  sim_data %>%
+    mutate(
+      Decision_D = case_when(
+        Inconclusive == 1                        ~ "Insuff",
+        Error == 0 & Mating == "Mated"           ~ "ID",
+        Error == 0 & Mating == "Nonmated"        ~ "Excl",
+        Error == 1 & Mating == "Mated"           ~ "Excl",    # false exclusion
+        Error == 1 & Mating == "Nonmated"        ~ "ID",      # false ID
+        TRUE                                     ~ NA_character_
+      )
+    )
+}
+
+
+
+# 2.  bootstrap_statistic()
+#
+#  Computes inc_rate and err_rate at three levels of aggregation:
+#
+#  OVERALL  : single rates across the whole dataset
+#  BY ROW   : per Difficulty x Mating cell (row-level breakdown)
+#  BY EXAMINER : one rate per examiner (AnonID)
+#  BY CSET     : one rate per cset (Cset)
+#
+#  Returns a named list. The by_* elements are tibbles with one row per
+#  group — these can be summarised across bootstrap replicates to get
+#  group-specific CIs.
+
+bootstrap_statistic <- function(df, decision_col = "Decision_D") {
+
+  dec     <- df[[decision_col]]
+  n_total <- nrow(df)
+  n_inc   <- sum(dec == "Insuff",   na.rm = TRUE)
+  n_conc  <- sum(dec != "Insuff" & !is.na(dec))
+  conc_df <- df[!is.na(dec) & dec != "Insuff", ]
+  n_err   <- sum(conc_df$Error == 1, na.rm = TRUE)
+
+
+  # Overall rates
+
+  overall <- list(
+    inc_rate = n_inc / n_total,
+    err_rate = if (n_conc > 0) n_err / n_conc else NA_real_,
+    n_total  = n_total,
+    n_inc    = n_inc,
+    n_conc   = n_conc,
+    n_err    = n_err
+  )
+
+
+  # By row  — breakdown by Difficulty x Mating cell
+  # Each cell gets its own inc_rate and err_rate.
+
+  by_row <- df %>%
+    mutate(.dec = .data[[decision_col]]) %>%
+    group_by(Difficulty, Mating) %>%
+    summarise(
+      n_total  = n(),
+      n_inc    = sum(.dec == "Insuff",  na.rm = TRUE),
+      n_conc   = sum(.dec != "Insuff" & !is.na(.dec)),
+      n_err    = sum(Error == 1 & .dec != "Insuff", na.rm = TRUE),
+      inc_rate = n_inc / n_total,
+      err_rate = if_else(n_conc > 0, n_err / n_conc, NA_real_),
+      .groups  = "drop"
+    )
+
+
+  # By examiner  — one inc_rate and err_rate per AnonID
+  # Useful for detecting which examiners drive coverage failures.
+
+  by_examiner <- df %>%
+    mutate(.dec = .data[[decision_col]]) %>%
+    group_by(AnonID) %>%
+    summarise(
+      n_total  = n(),
+      n_inc    = sum(.dec == "Insuff",  na.rm = TRUE),
+      n_conc   = sum(.dec != "Insuff" & !is.na(.dec)),
+      n_err    = sum(Error == 1 & .dec != "Insuff", na.rm = TRUE),
+      inc_rate = n_inc / n_total,
+      err_rate = if_else(n_conc > 0, n_err / n_conc, NA_real_),
+      .groups  = "drop"
+    )
+
+
+  # By cset  — one inc_rate and err_rate per Cset
+  # Useful for detecting which csets are systematically hard.
+
+  by_cset <- df %>%
+    mutate(.dec = .data[[decision_col]]) %>%
+    group_by(Cset, Difficulty, Mating) %>%
+    summarise(
+      n_total  = n(),
+      n_inc    = sum(.dec == "Insuff",  na.rm = TRUE),
+      n_conc   = sum(.dec != "Insuff" & !is.na(.dec)),
+      n_err    = sum(Error == 1 & .dec != "Insuff", na.rm = TRUE),
+      inc_rate = n_inc / n_total,
+      err_rate = if_else(n_conc > 0, n_err / n_conc, NA_real_),
+      .groups  = "drop"
+    )
+
+  list(
+    overall      = overall,
+    by_row       = by_row,
+    by_examiner  = by_examiner,
+    by_cset      = by_cset
+  )
+}
+
+
+
+
+
+
+# 2.  true_parameters()
+#  Computes the TRUE inc_rate and err_rate for a given scenario by averaging
+#  over the fixed effects and random effect distributions analytically.
+#  This is the "ground truth" the bootstrap CIs are evaluated against.
+#  Because the logit link is nonlinear, E[inv_logit(lp)] != inv_logit(E[lp]).
+#  We approximate via Monte Carlo integration over the random effects.
+
+true_parameters <- function(
+    per_diff       = rep(0.2, 5),
+    per_exam_skill = rep(1/3, 3),
+    per_quality1   = c(1/3, 1/3, 1/3),
+    per_quality2   = rep(0.25, 4),
+    Hawthorne      = 0,
+    mated_prop     = 0.5,
+    beta_inc = list(
+      intercept =  0.1495,
+      diff      = c(-17.2028, -5.0423, -1.1706, 0.0000, 0.9113),
+      skill     = c(0, 0, 0),
+      quality1  = c(0.0000, 0.5377, 1.6007),
+      quality2  = c(0.0000, 0.2857, 0.2219, 0.6841),
+      hawthorne = 0.5
+    ),
+    sd_exam_inc = 1.1677,
+    sd_cset_inc = 0.8605,
+    beta_err = list(
+      intercept = -2.2259,
+      diff      = c(-3.0829, -3.0829, -0.6228, 0.0000, 0.5032),
+      skill     = c(0, 0, 0),
+      quality1  = c(0.0000, 0.1779, 1.4058),
+      quality2  = c(0.0000, 0.6122, 0.5528, 0.7438),
+      hawthorne = 0.0
+    ),
+    sd_exam_err = 0.9655,
+    sd_cset_err = 0.0,
+    n_mc        = 50000
+) {
+  inv_logit <- plogis
+
+  # draw covariate levels according to design proportions
+  diff_id   <- sample(seq_along(per_diff),       n_mc, replace = TRUE, prob = per_diff)
+  skill_id  <- sample(seq_along(per_exam_skill), n_mc, replace = TRUE, prob = per_exam_skill)
+  q1_id     <- sample(seq_along(per_quality1),   n_mc, replace = TRUE, prob = per_quality1)
+  q2_id     <- sample(seq_along(per_quality2),   n_mc, replace = TRUE, prob = per_quality2)
+
+  # random effects
+  u_inc <- rnorm(n_mc, 0, sd_exam_inc)
+  v_inc <- rnorm(n_mc, 0, sd_cset_inc)
+  u_err <- rnorm(n_mc, 0, sd_exam_err)
+  v_err <- rnorm(n_mc, 0, sd_cset_err)
+
+  # linear predictors for each MC draw
+  eta_inc <- beta_inc$intercept +
+    beta_inc$diff[diff_id] +
+    beta_inc$skill[skill_id] +
+    beta_inc$quality1[q1_id] +
+    beta_inc$quality2[q2_id] +
+    beta_inc$hawthorne * Hawthorne +
+    u_inc + v_inc
+
+  eta_err <- beta_err$intercept +
+    beta_err$diff[diff_id] +
+    beta_err$skill[skill_id] +
+    beta_err$quality1[q1_id] +
+    beta_err$quality2[q2_id] +
+    beta_err$hawthorne * Hawthorne +
+    u_err + v_err
+
+  p_inc_mc <- inv_logit(eta_inc)
+  p_err_mc <- inv_logit(eta_err)
+
+  true_inc <- mean(p_inc_mc)
+  true_err <- sum(p_err_mc * (1 - p_inc_mc)) / sum(1 - p_inc_mc)
+
+  list(
+    true_inc_rate = true_inc,
+    true_err_rate = true_err,
+    mated_prop    = mated_prop
+  )
+}
+
+
+# 3.  simulate_coverage()
+
+#  Single unified function replacing simulate_and_bootstrap() and
+#  coverage_simulation(). All scenario arguments are specified once.
+
+simulate_coverage <- function(
+
+    M                = 200,
+    B                = 500,
+    bootstrap_method = c("row", "examiner", "cset"),
+    conf_level       = 0.95,
+    decision_col     = "Decision_D",
+    seed             = 42,
+    keep_last        = FALSE,
+    return_data      = FALSE,
+    ...
+) {
+
+  bootstrap_method <- match.arg(bootstrap_method)
+  alpha  <- 1 - conf_level
+  dots   <- list(...)   # scenario args — passed to both true_parameters() and one_simulation()
+
+  # Step 1: compute true parameters for this scenario
+
+  message("Computing true parameters via Monte Carlo integration...")
+  true_par <- do.call(true_parameters, dots)
+  message(sprintf(
+    "  True inc_rate = %.4f  |  True err_rate = %.4f",
+    true_par$true_inc_rate, true_par$true_err_rate
+  ))
+
+
+  # Step 2: outer loop — M repetitions
+
+  message(sprintf(
+    "Running %d repetitions x %d bootstrap replicates [method = '%s']...",
+    M, B, bootstrap_method
+  ))
+
+  results   <- vector("list", M)
+  last_boot <- NULL   # optionally stored for diagnostics
+
+  for (m in seq_len(M)) {
+
+    if (m %% 25 == 0) message(sprintf("  repetition %d / %d", m, M))
+
+    set.seed(seed + m)   # deterministic per-repetition seed
+
+    # --- 2a. Generate one synthetic dataset ----------------------------------
+    sim_df   <- do.call(one_simulation, dots)
+    obs_full <- bootstrap_statistic(sim_df, decision_col)
+    obs_stat <- obs_full$overall   # scalar rates for coverage check
+
+    # --- 2b. Bootstrap loop --------------------------------------------------
+    boot_stats <- vector("list", B)
+
+    for (b in seq_len(B)) {
+
+      boot_df <- switch(bootstrap_method,
+
+        "row" = {
+          sim_df[sample(nrow(sim_df), nrow(sim_df), replace = TRUE), ]
+        },
+
+        "examiner" = {
+          exams   <- unique(sim_df$AnonID)
+          sampled <- sample(exams, length(exams), replace = TRUE)
+          lapply(seq_along(sampled), function(i) {
+            sim_df %>%
+              filter(AnonID == sampled[i]) %>%
+              mutate(AnonID = paste0(AnonID, "_b", i))
+          }) %>% bind_rows()
+        },
+
+        "cset" = {
+          cs      <- unique(sim_df$Cset)
+          sampled <- sample(cs, length(cs), replace = TRUE)
+          lapply(seq_along(sampled), function(i) {
+            sim_df %>%
+              filter(Cset == sampled[i]) %>%
+              mutate(Cset = paste0(Cset, "_b", i))
+          }) %>% bind_rows()
+        }
+      )
+
+      s <- bootstrap_statistic(boot_df, decision_col)
+
+      # Overall scalar stats — used for coverage CI
+      boot_stats[[b]] <- tibble(
+        inc_rate = s$overall$inc_rate,
+        err_rate = s$overall$err_rate,
+        n_total  = s$overall$n_total,
+        n_inc    = s$overall$n_inc,
+        n_conc   = s$overall$n_conc,
+        n_err    = s$overall$n_err,
+
+        # By-examiner mean rates (scalar summaries across examiners)
+        inc_rate_exam_mean = mean(s$by_examiner$inc_rate, na.rm = TRUE),
+        err_rate_exam_mean = mean(s$by_examiner$err_rate, na.rm = TRUE),
+        inc_rate_exam_sd   = sd(s$by_examiner$inc_rate,   na.rm = TRUE),
+        err_rate_exam_sd   = sd(s$by_examiner$err_rate,   na.rm = TRUE),
+
+        # By-cset mean rates (scalar summaries across csets)
+        inc_rate_cset_mean = mean(s$by_cset$inc_rate, na.rm = TRUE),
+        err_rate_cset_mean = mean(s$by_cset$err_rate, na.rm = TRUE),
+        inc_rate_cset_sd   = sd(s$by_cset$inc_rate,   na.rm = TRUE),
+        err_rate_cset_sd   = sd(s$by_cset$err_rate,   na.rm = TRUE)
+      )
+    }
+
+    boot_tbl <- bind_rows(boot_stats)
+
+    # --- 2c. Percentile CI and coverage check (overall rates) ----------------
+    ci_wide <- boot_tbl %>%
+      summarise(
+        inc_lo = quantile(inc_rate, alpha / 2,     na.rm = TRUE),
+        inc_hi = quantile(inc_rate, 1 - alpha / 2, na.rm = TRUE),
+        err_lo = quantile(err_rate, alpha / 2,     na.rm = TRUE),
+        err_hi = quantile(err_rate, 1 - alpha / 2, na.rm = TRUE)
+      )
+
+    results[[m]] <- tibble(
+      rep          = m,
+      obs_inc_rate = obs_stat$inc_rate,
+      obs_err_rate = obs_stat$err_rate,
+      inc_lo       = ci_wide$inc_lo,
+      inc_hi       = ci_wide$inc_hi,
+      err_lo       = ci_wide$err_lo,
+      err_hi       = ci_wide$err_hi,
+      inc_covered  = (true_par$true_inc_rate >= ci_wide$inc_lo) &
+                     (true_par$true_inc_rate <= ci_wide$inc_hi),
+      err_covered  = (true_par$true_err_rate >= ci_wide$err_lo) &
+                     (true_par$true_err_rate <= ci_wide$err_hi)
+    )
+
+    if (keep_last   && m == M) last_boot <- boot_tbl
+    if (return_data && m == M) last_sim  <- sim_df
+  }
+
+  rep_tbl <- bind_rows(results)
+
+  # Step 3: coverage summary
+
+  coverage_summary <- tibble(
+    statistic        = c("inc_rate", "err_rate"),
+    true_value       = c(true_par$true_inc_rate, true_par$true_err_rate),
+    coverage_rate    = c(mean(rep_tbl$inc_covered, na.rm = TRUE),
+                         mean(rep_tbl$err_covered, na.rm = TRUE)),
+    mean_ci_width    = c(mean(rep_tbl$inc_hi - rep_tbl$inc_lo, na.rm = TRUE),
+                         mean(rep_tbl$err_hi - rep_tbl$err_lo, na.rm = TRUE)),
+    nominal_coverage = conf_level,
+    M                = M,
+    B                = B,
+    bootstrap_method = bootstrap_method
+  )
+
+  message("\n=== Coverage Summary ===")
+  print(coverage_summary)
+
+  out <- list(
+    coverage_summary = coverage_summary,
+    repetitions      = rep_tbl,
+    true_parameters  = true_par,
+    bootstrap_method = bootstrap_method,
+    M                = M,
+    B                = B,
+    seed             = seed
+  )
+  if (keep_last)   out$last_boot_replicates <- last_boot
+  if (return_data) out$simulated_data       <- last_sim
+  out
+}
+```
+
+```{r}
+extract_var_prop <- function(fit) {
+  vc <- as.data.frame(VarCorr(fit))
+  vars <- setNames(vc$vcov, vc$grp)
+  v_exam <- if ("AnonID" %in% names(vars)) vars["AnonID"] else 0
+  v_cset <- if ("Cset"   %in% names(vars)) vars["Cset"]   else 0
+  v_res  <- pi^2 / 3
+  v_tot  <- v_exam + v_cset + v_res
+  tibble(
+    var_exam   = v_exam,
+    var_cset   = v_cset,
+    var_resid  = v_res,
+    prop_exam  = v_exam / v_tot,
+    prop_cset  = v_cset / v_tot,
+    prop_resid = v_res / v_tot
+  )
+}
+
+fit_models_once <- function(sim_df) {
+  fit_inc <- tryCatch(
+    glmer(
+      Inconclusive ~ Difficulty + Quality1 + Quality2 + (1 | AnonID) + (1 | Cset),
+      data = sim_df,
+      family = binomial,
+      control = glmerControl(
+        optimizer = "bobyqa",
+        optCtrl = list(maxfun = 2e5)
+      )
+    ),
+    error = function(e) NULL
+  )
+
+  fit_err <- tryCatch(
+    glmer(
+      Error ~ Difficulty + Quality1 + Quality2 + (1 | AnonID),
+      data = subset(sim_df, Inconclusive == 0),
+      family = binomial,
+      control = glmerControl(
+        optimizer = "bobyqa",
+        optCtrl = list(maxfun = 2e5)
+      )
+    ),
+    error = function(e) NULL
+  )
+
+  inc_var <- if (!is.null(fit_inc)) {
+    extract_var_prop(fit_inc)
+  } else {
+    tibble(
+      var_exam = NA_real_, var_cset = NA_real_, var_resid = NA_real_,
+      prop_exam = NA_real_, prop_cset = NA_real_, prop_resid = NA_real_
+    )
+  }
+
+  err_var <- if (!is.null(fit_err)) {
+    extract_var_prop(fit_err)
+  } else {
+    tibble(
+      var_exam = NA_real_, var_cset = NA_real_, var_resid = NA_real_,
+      prop_exam = NA_real_, prop_cset = NA_real_, prop_resid = NA_real_
+    )
+  }
+
+  list(
+    fit_inc = fit_inc,
+    fit_err = fit_err,
+    inc_var = inc_var,
+    err_var = err_var
+  )
+}
+```
+
+
+
+```{r}
+Sim_boot_cov <- function(
+    per_diff        = rep(0.2, 5),
+    per_exam_skill  = rep(1/3, 3),
+    per_quality1    = c(1/3, 1/3, 1/3),
+    per_quality2    = rep(0.25, 4),
+    Hawthorne       = 0,
+    n_examiners     = 30,
+    nKQ             = 50,
+    nQQ             = 50,
+    mated_prop      = 0.5,
+
+    beta_inc = list(
+      intercept =  0.1495,
+      diff      = c(-17.2028, -5.0423, -1.1706, 0.0000, 0.9113),
+      skill     = c(0, 0, 0),
+      quality1  = c(0.0000, 0.5377, 1.6007),
+      quality2  = c(0.0000, 0.2857, 0.2219, 0.6841),
+      hawthorne = 0.5
+    ),
+    sd_exam_inc = 1.1677,
+    sd_cset_inc = 0.8605,
+
+    beta_err = list(
+      intercept = -2.2259,
+      diff      = c(-3.0829, -3.0829, -0.6228, 0.0000, 0.5032),
+      skill     = c(0, 0, 0),
+      quality1  = c(0.0000, 0.1779, 1.4058),
+      quality2  = c(0.0000, 0.6122, 0.5528, 0.7438),
+      hawthorne = 0.0
+    ),
+    sd_exam_err = 0.9655,
+    sd_cset_err = 0.0,
+
+    M                = 200,
+    B                = 500,
+    bootstrap_method = c("row", "examiner", "cset"),
+    conf_level       = 0.95,
+    decision_col     = "Decision_D",
+    seed             = 42,
+    keep_last        = FALSE,
+    return_data      = FALSE,
+    fit_each_time    = TRUE,
+    keep_last_fits   = FALSE
+) {
+
+  bootstrap_method <- match.arg(bootstrap_method)
+  alpha <- 1 - conf_level
+
+  true_par_args <- list(
+    per_diff       = per_diff,
+    per_exam_skill = per_exam_skill,
+    per_quality1   = per_quality1,
+    per_quality2   = per_quality2,
+    Hawthorne      = Hawthorne,
+    mated_prop     = mated_prop,
+    beta_inc       = beta_inc,
+    sd_exam_inc    = sd_exam_inc,
+    sd_cset_inc    = sd_cset_inc,
+    beta_err       = beta_err,
+    sd_exam_err    = sd_exam_err,
+    sd_cset_err    = sd_cset_err
+  )
+
+  sim_args <- c(true_par_args, list(
+    n_examiners = n_examiners,
+    nKQ         = nKQ,
+    nQQ         = nQQ
+  ))
+
+  message("Computing true parameters via Monte Carlo integration...")
+  true_par <- do.call(true_parameters, true_par_args)
+  message(sprintf(
+    "  True inc_rate = %.4f  |  True err_rate = %.4f",
+    true_par$true_inc_rate, true_par$true_err_rate
+  ))
+
+  message(sprintf(
+    "Running %d repetitions x %d bootstrap replicates [method = '%s']...",
+    M, B, bootstrap_method
+  ))
+
+  results    <- vector("list", M)
+  var_results <- vector("list", M)
+  last_boot  <- NULL
+  last_sim   <- NULL
+  last_fits  <- NULL
+
+  for (m in seq_len(M)) {
+
+    if (m %% 25 == 0) message(sprintf("  repetition %d / %d", m, M))
+
+    set.seed(seed + m)
+
+    sim_df   <- do.call(one_simulation, sim_args)
+    obs_stat <- bootstrap_statistic(sim_df, decision_col)$overall
+
+    if (fit_each_time) {
+      fits <- fit_models_once(sim_df)
+
+      var_results[[m]] <- bind_cols(
+        tibble(rep = m),
+        rename_with(fits$inc_var, ~ paste0("inc_", .x)),
+        rename_with(fits$err_var, ~ paste0("err_", .x))
+      )
+
+      if (keep_last_fits && m == M) last_fits <- fits
+    }
+
+    boot_stats <- vector("list", B)
+
+    for (b in seq_len(B)) {
+
+      boot_df <- switch(bootstrap_method,
+
+        "row" = {
+          sim_df[sample(nrow(sim_df), nrow(sim_df), replace = TRUE), ]
+        },
+
+        "examiner" = {
+          exams   <- unique(sim_df$AnonID)
+          sampled <- sample(exams, length(exams), replace = TRUE)
+          lapply(seq_along(sampled), function(i) {
+            sim_df %>%
+              filter(AnonID == sampled[i]) %>%
+              mutate(AnonID = paste0(AnonID, "_b", i))
+          }) %>% bind_rows()
+        },
+
+        "cset" = {
+          cs      <- unique(sim_df$Cset)
+          sampled <- sample(cs, length(cs), replace = TRUE)
+          lapply(seq_along(sampled), function(i) {
+            sim_df %>%
+              filter(Cset == sampled[i]) %>%
+              mutate(Cset = paste0(Cset, "_b", i))
+          }) %>% bind_rows()
+        }
+      )
+
+      s <- bootstrap_statistic(boot_df, decision_col)$overall
+
+      boot_stats[[b]] <- tibble(
+        inc_rate = s$inc_rate,
+        err_rate = s$err_rate,
+        n_total  = s$n_total,
+        n_inc    = s$n_inc,
+        n_conc   = s$n_conc,
+        n_err    = s$n_err
+      )
+    }
+
+    boot_tbl <- bind_rows(boot_stats)
+
+    ci_wide <- boot_tbl %>%
+      summarise(
+        inc_lo = quantile(inc_rate, alpha / 2,     na.rm = TRUE),
+        inc_hi = quantile(inc_rate, 1 - alpha / 2, na.rm = TRUE),
+        err_lo = quantile(err_rate, alpha / 2,     na.rm = TRUE),
+        err_hi = quantile(err_rate, 1 - alpha / 2, na.rm = TRUE)
+      )
+
+    results[[m]] <- tibble(
+      rep          = m,
+      obs_inc_rate = obs_stat$inc_rate,
+      obs_err_rate = obs_stat$err_rate,
+      inc_lo       = ci_wide$inc_lo,
+      inc_hi       = ci_wide$inc_hi,
+      err_lo       = ci_wide$err_lo,
+      err_hi       = ci_wide$err_hi,
+      inc_covered  = (true_par$true_inc_rate >= ci_wide$inc_lo) &
+                     (true_par$true_inc_rate <= ci_wide$inc_hi),
+      err_covered  = (true_par$true_err_rate >= ci_wide$err_lo) &
+                     (true_par$true_err_rate <= ci_wide$err_hi)
+    )
+
+    if (keep_last && m == M)   last_boot <- boot_tbl
+    if (return_data && m == M) last_sim  <- sim_df
+  }
+
+  rep_tbl <- bind_rows(results)
+
+  coverage_summary <- tibble(
+    statistic        = c("inc_rate", "err_rate"),
+    true_value       = c(true_par$true_inc_rate, true_par$true_err_rate),
+    coverage_rate    = c(mean(rep_tbl$inc_covered, na.rm = TRUE),
+                         mean(rep_tbl$err_covered, na.rm = TRUE)),
+    mean_ci_width    = c(mean(rep_tbl$inc_hi - rep_tbl$inc_lo, na.rm = TRUE),
+                         mean(rep_tbl$err_hi - rep_tbl$err_lo, na.rm = TRUE)),
+    nominal_coverage = conf_level,
+    M                = M,
+    B                = B,
+    bootstrap_method = bootstrap_method
+  )
+
+  variance_summary <- NULL
+  variance_repetitions <- NULL
+
+  if (fit_each_time) {
+    variance_repetitions <- bind_rows(var_results)
+
+    variance_summary <- tibble(
+      model = c("Inconclusive", "Error"),
+      mean_exam_share = c(
+        mean(variance_repetitions$inc_prop_exam, na.rm = TRUE),
+        mean(variance_repetitions$err_prop_exam, na.rm = TRUE)
+      ),
+      mean_cset_share = c(
+        mean(variance_repetitions$inc_prop_cset, na.rm = TRUE),
+        mean(variance_repetitions$err_prop_cset, na.rm = TRUE)
+      ),
+      mean_resid_share = c(
+        mean(variance_repetitions$inc_prop_resid, na.rm = TRUE),
+        mean(variance_repetitions$err_prop_resid, na.rm = TRUE)
+      ),
+      mean_exam_var = c(
+        mean(variance_repetitions$inc_var_exam, na.rm = TRUE),
+        mean(variance_repetitions$err_var_exam, na.rm = TRUE)
+      ),
+      mean_cset_var = c(
+        mean(variance_repetitions$inc_var_cset, na.rm = TRUE),
+        mean(variance_repetitions$err_var_cset, na.rm = TRUE)
+      )
+    )
+  }
+
+  message("\n=== Coverage Summary ===")
+  print(coverage_summary)
+
+  if (fit_each_time) {
+    message("\n=== Variance Share Summary ===")
+    print(variance_summary)
+  }
+
+  out <- list(
+    coverage_summary     = coverage_summary,
+    repetitions          = rep_tbl,
+    true_parameters      = true_par,
+    bootstrap_method     = bootstrap_method,
+    M                    = M,
+    B                    = B,
+    seed                 = seed,
+    variance_summary     = variance_summary,
+    variance_repetitions = variance_repetitions
+  )
+
+  if (keep_last)      out$last_boot_replicates <- last_boot
+  if (return_data)    out$simulated_data       <- last_sim
+  if (keep_last_fits) out$last_fits            <- last_fits
+
+  out
+}
+```
+
+```{r}
+ Sim_boot_cov(
+  M           = 100,          # one dataset
+  B           = 100,       # 2000 bootstrap draws
+  keep_last   = TRUE,       # keep the bootstrap replicates tibble
+  return_data = TRUE,       # keep the simulated dataset
+  bootstrap_method = "examiner",
+  seed             = 42,
+  per_diff         = rep(0.2, 5),
+  per_quality1    = c(1/3, 1/3, 1/3),
+  per_quality2    = rep(0.25, 4),
+ Hawthorne    = 0,
+  n_examiners      = 49,
+  nKQ              = 50,
+  nQQ              = 50
+)
+
+
+ Sim_boot_cov(
+  M           = 100,          # one dataset
+  B           = 100,       # 2000 bootstrap draws
+  keep_last   = TRUE,       # keep the bootstrap replicates tibble
+  return_data = TRUE,       # keep the simulated dataset
+  bootstrap_method = "examiner",
+  seed             = 42,
+  per_diff         = c(0.3,0.3,0.2,0.1,0.1),
+  per_quality1    = c(1/3, 1/3, 1/3),
+  per_quality2    = rep(0.25, 4),
+ Hawthorne    = 0,
+  n_examiners      = 49,
+  nKQ              = 50,
+  nQQ              = 50
+)
+```
+
+
