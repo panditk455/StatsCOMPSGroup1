@@ -1,0 +1,341 @@
+
+---
+title: "VarianceAnalysis"
+output: html_document
+---
+
+# Why is  variance decomposition Important?
+ 
+Bootstrap methods behave differently depending on where the dependence comes from.
+In this dataset, responses are clustered in two ways:
+
+- Examiner (AnonID): one examiner makes many decisions  
+- Item set (Cset): many examiners evaluate the same evidence item
+
+If clustering is strong, the row-level (naive) bootstrap can underestimate uncertainty.
+Variance decomposition helps us answer:
+
+Is dependence mainly examiner-driven or item-driven?
+
+That tells us which bootstrap is most appropriate:
+
+- item dependence -> item-clustered bootstrap
+- examiner dependence -> examiner-clustered bootstrap
+- weak dependence -> row bootstrap may be acceptable
+
+
+I focused on false positive (FP) decisions for the variance decomposition because FP errors are the most critical outcome in forensic identification studies and are commonly used as the primary performance metric. 
+
+Modeling FP outcomes also simplifies the statistical structure, since false positives occur only when the true source is different.
+
+This produces a clear binary response variable suitable for logistic mixed-effects modeling.
+
+By analyzing FP variability first, we can directly connect the variance structure of the data to our earlier bootstrap comparison of FP confidence intervals.
+
+```{r}
+library(dplyr)
+library(lme4)
+library(ggplot2)
+
+responses_fp <- responses %>%
+  mutate(
+    truth = if_else(Mating == "Mated", "SameSource", "DifferentSource"),
+    call_type = case_when(
+      Decision %in% c("ID","LeanID") ~ "ID",
+      Decision %in% c("Excl","LeanExcl") ~ "Excl",
+      Decision %in% c("Insuff","NoValue") ~ "Inconclusive",
+      TRUE ~ NA_character_
+    ),
+    is_fp   = as.integer(truth == "DifferentSource" & call_type == "ID")
+  ) %>%
+  select(AnonID, Cset, is_fp)
+```
+
+
+
+Some Csets have very few responses (n = 1-2). If any of these have all FP = 1 or all FP = 0, logistic mixed models can become unstable. So we report sparsity and (optionally) filter to Csets with enough data.
+
+```{r}
+cset_summary <- responses_fp %>%
+  group_by(Cset) %>%
+  summarise(
+    n = n(),
+    fp_rate = mean(is_fp),
+    .groups = "drop"
+  )
+
+# show the most extreme (often tiny n) Csets
+head(arrange(cset_summary, desc(fp_rate)), 10)
+```
+
+For a stable variance decomposition, we restrict to Csets with at least 5 responses.
+
+```{r}
+responses_fp_filt <- responses_fp %>%
+  group_by(Cset) %>%
+  filter(n() >= 2) %>%
+  ungroup()
+
+
+c(n_full = nrow(responses_fp), n_filtered = nrow(responses_fp_filt))
+```
+
+
+
+Fitting the crossed random-effects model (examiner + item)
+
+
+
+$ \text{logit}(P(FP=1)) = \beta_0 + u_{\text{examiner}} + u_{\text{item}} $
+
+```{r}
+model <- glmer(
+  is_fp ~ 1 + (1 | AnonID) + (1 | Cset),
+  data = responses_fp_filt,
+  family = binomial,
+  # added optimizer as there were warnings as well as errors in the outputs:
+  control = glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5))
+)
+```
+
+Extracting the variance components:
+
+```{r}
+vc <- as.data.frame(VarCorr(model))[, c("grp","vcov","sdcor")]
+vc
+```
+
+Computing the  ICCs, the  variance proportions
+
+For logistic mixed models, a common approximation uses residual variance:
+
+
+$ \sigma^2_{res} = \pi^2/3 \approx 3.29 $
+
+ICCs tell us what fraction of total variance comes from each clustering source?
+
+```{r}
+var_exam <- vc$vcov[vc$grp == "AnonID"]
+var_item <- vc$vcov[vc$grp == "Cset"]
+var_res  <- (pi^2)/3
+
+total_var <- var_exam + var_item + var_res
+
+icc_exam <- var_exam / total_var
+icc_item <- var_item / total_var
+
+icc_table <- data.frame(
+  Source = c("Examiner (AnonID)", "Item set (Cset)", "Residual"),
+  Variance = c(var_exam, var_item, var_res),
+  Proportion = c(icc_exam, icc_item, var_res/total_var)
+)
+
+icc_table
+```
+
+
+ Different variance proportions, just a plot to look at it.
+
+```{r}
+ggplot(icc_table, aes(x = Source, y = Proportion)) +
+  geom_col() +
+  scale_y_continuous(limits = c(0,1)) +
+  labs(
+    title = "Variance decomposition for FP (crossed random effects)",
+    y = "Proportion of total variance",
+    x = NULL
+  )
+```
+
+
+
+If Item ICC > Examiner ICC, item difficulty explains more FP variability
+  -> item-clustered bootstrap is more appropriate
+  
+If Examiner ICC > Item ICC, examiner tendencies explain more
+  ->  examiner-clustered bootstrap is more appropriate
+
+If both are small, dependence is weak
+  ->  row bootstrap is likely okay
+
+
+WRITE UP about WHY? WHAT? RESULT AND WHAT'S NEXT:
+ 
+
+To better understand why different bootstrap methods performed differently, I conducted a variance decomposition using a crossed random-effects logistic model. The goal was to determine whether variability in false positive (FP) decisions is driven more by examiner-level tendencies or by item-level difficulty. Since responses are clustered both by examiner (each examiner evaluates multiple items) and by item (each item is evaluated by multiple examiners), ignoring this structure can lead to incorrect uncertainty estimates. By fitting the model $ ( \text{FP} \sim 1 + (1 \mid \text{AnonID}) + (1 \mid \text{Cset}) )$, I estimated how much of the total variance in FP outcomes is attributable to examiners, items, and residual noise. This directly connects to our bootstrap comparison: if item-level variability dominates, then an item-clustered bootstrap should perform best.
+
+The results show that approximately 90% of the total variance in FP decisions is attributable to item-level differences, while only about 7.5% is attributable to examiner-level variation, with the remainder due to residual variability. This indicates that item difficulty plays a substantially larger role in driving false positives than systematic examiner tendencies. These findings strongly support our earlier simulation results, where the item-clustered bootstrap achieved the best balance between coverage and interval width. The next step is to stabilize and further validate this variance structure by examining sensitivity to sparse item sets and potentially comparing these results to a simplified model (e.g., item-only random effects). This will help confirm whether item-level dependence consistently dominates and will strengthen our practical recommendation that item-clustered resampling is the most appropriate method for this dataset.
+
+
+# For the warning, alternatives:
+
+```{r}
+library(dplyr)
+library(lme4)
+
+# Fitting the model safely (returns NULL if it fails)
+fit_glmer_safe <- function(df, formula) {
+  tryCatch(
+    glmer(
+      formula,
+      data = df,
+      family = binomial,
+      control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5))
+    ),
+    error = function(e) NULL
+  )
+}
+
+# Compute ICC table from a fitted glmer model (logistic residual variance = pi^2/3)
+icc_from_model <- function(model) {
+  vc <- as.data.frame(VarCorr(model))
+  var_exam <- vc$vcov[vc$grp == "AnonID"]; if (length(var_exam) == 0) var_exam <- 0
+  var_item <- vc$vcov[vc$grp == "Cset"];   if (length(var_item) == 0) var_item <- 0
+  var_res  <- (pi^2)/3
+
+  total <- var_exam + var_item + var_res
+
+  tibble(
+    var_exam = var_exam,
+    var_item = var_item,
+    var_res  = var_res,
+    icc_exam = var_exam / total,
+    icc_item = var_item / total,
+    icc_res  = var_res  / total
+  )
+}
+
+diag_groups <- function(df) {
+  exam_any_fp <- df %>% group_by(AnonID) %>% summarise(any_fp = any(is_fp == 1), n=n(), .groups="drop")
+  item_any_fp <- df %>% group_by(Cset)   %>% summarise(any_fp = any(is_fp == 1), n=n(), .groups="drop")
+
+  tibble(
+    n_rows = nrow(df),
+    n_examiners = n_distinct(df$AnonID),
+    n_items = n_distinct(df$Cset),
+    examiners_with_any_fp = sum(exam_any_fp$any_fp),
+    items_with_any_fp = sum(item_any_fp$any_fp),
+    max_n_per_item = max(item_any_fp$n),
+    max_n_per_examiner = max(exam_any_fp$n)
+  )
+}
+```
+
+
+Sensitivity analysis: varying the minimum Cset size and recomputing the ICC
+
+```{r}
+thresholds <- c(1, 2, 3, 4)  
+
+sens_results <- lapply(thresholds, function(tmin) {
+  df_filt <- responses_fp %>%
+    group_by(Cset) %>%
+    filter(n() >= tmin) %>%
+    ungroup()
+
+  # diagnostics
+  dg <- diag_groups(df_filt)
+
+  # fit crossed model
+  m_full <- fit_glmer_safe(df_filt, is_fp ~ 1 + (1 | AnonID) + (1 | Cset))
+
+  if (is.null(m_full)) {
+    return(bind_cols(tibble(min_cset_n = tmin), dg,
+                     tibble(model_ok = FALSE, AIC = NA_real_,
+                            var_exam = NA_real_, var_item = NA_real_,
+                            icc_exam = NA_real_, icc_item = NA_real_)))
+  }
+
+  icc <- icc_from_model(m_full)
+
+  bind_cols(
+    tibble(min_cset_n = tmin),
+    dg,
+    tibble(model_ok = TRUE, AIC = AIC(m_full)),
+    icc
+  )
+})
+
+sens_table <- bind_rows(sens_results)
+sens_table
+```
+
+
+
+```{r}
+df_use <- responses_fp %>%
+  group_by(Cset) %>%
+  filter(n() >= 2) %>%
+  ungroup()
+
+diag_groups(df_use)
+```
+
+
+
+```{r}
+m_item <- fit_glmer_safe(df_use, is_fp ~ 1 + (1 | Cset))
+m_exam <- fit_glmer_safe(df_use, is_fp ~ 1 + (1 | AnonID))
+m_full <- fit_glmer_safe(df_use, is_fp ~ 1 + (1 | AnonID) + (1 | Cset))
+
+list(
+  item_only_ok = !is.null(m_item),
+  exam_only_ok = !is.null(m_exam),
+  full_ok      = !is.null(m_full)
+)
+```
+
+
+```{r}
+compare_models <- tibble(
+  model = c("Item only", "Examiner only", "Crossed (Item + Examiner)"),
+  AIC = c(if (!is.null(m_item)) AIC(m_item) else NA_real_,
+          if (!is.null(m_exam)) AIC(m_exam) else NA_real_,
+          if (!is.null(m_full)) AIC(m_full) else NA_real_)
+)
+
+compare_models
+```
+
+```{r}
+icc_item <- if (!is.null(m_item)) icc_from_model(m_item) %>% mutate(model="Item only") else NULL
+icc_exam <- if (!is.null(m_exam)) icc_from_model(m_exam) %>% mutate(model="Examiner only") else NULL
+icc_full <- if (!is.null(m_full)) icc_from_model(m_full) %>% mutate(model="Crossed") else NULL
+
+icc_models <- bind_rows(icc_item, icc_exam, icc_full) %>%
+  select(model, var_exam, var_item, icc_exam, icc_item, icc_res)
+
+icc_models
+
+```
+
+
+```{r}
+item_polarization <- df_use %>%
+  group_by(Cset) %>%
+  summarise(
+    n = n(),
+    fp_rate = mean(is_fp),
+    .groups="drop"
+  ) %>%
+  mutate(extreme = fp_rate %in% c(0, 1))
+
+item_polarization %>%
+  summarise(
+    n_items = n(),
+    n_extreme = sum(extreme),
+    pct_extreme = mean(extreme)
+  )
+```
+
+We conducted this variance decomposition analysis to understand why different bootstrap methods behaved differently in our earlier simulation study. Specifically, we wanted to determine whether false positive (FP) variability was primarily driven by examiner-level tendencies (such as bias or skill differences) or by item-level difficulty (characteristics of the bullet comparison set). To answer this, we fit a cross-classified logistic mixed-effects model with random intercepts for both examiner (AnonID) and item (Cset). This allowed us to partition the total variability in FP outcomes into examiner variance, item variance, and residual variance, and compute intraclass correlation coefficients (ICCs) to quantify how much each source contributed to overall variation.
+
+The results show that item-level variation dominates the structure of the data. In the crossed model, approximately 90% of the explainable variance in FP outcomes is attributable to item differences, while only about 7.5% is attributable to examiner differences, with very little residual variance. This aligns strongly with our earlier bootstrap findings: the item-clustered bootstrap performed best because most of the dependence in the data occurs at the item level. Additionally, nearly 90% of items have extreme FP rates (either 0 or 1), and most items have only 2–4 observations. This reveals that the data are sparse and highly imbalanced, which explains the convergence warnings and large variance estimates in the mixed model. Overall, these findings suggest that item difficulty—not examiner bias—is the primary driver of variability in false positives, and that accounting for item-level clustering is essential for valid inference.
+
+
+
+
+Next STEPS, Do the simulation from the spreadsheet and write down the reuslts for each simulation.
+
+
+

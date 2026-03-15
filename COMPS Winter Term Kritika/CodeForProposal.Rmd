@@ -1,0 +1,287 @@
+---
+title: "CodeForProposal"
+output: html_document
+---
+
+```{r}
+library(readxl)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(scales)
+```
+
+Importing the Data
+
+
+```{r}
+file_path <- "bullets_2024.xlsx"
+
+kq_data <- read_excel(file_path, sheet = "KQ responses (n=1575)")
+qq_data <- read_excel(file_path, sheet = "QQ responses (n=1581)")
+cset_data <- read_excel(file_path, sheet = "Cset (n=1240)")
+```
+
+Data Cleaning
+
+```{r}
+phase_label <- "Primary (Baseline)"
+
+kq <- kq_data %>%
+  filter(Phase == phase_label) %>%
+  mutate(
+    Decision = if_else(K01_Q1value == "NoValue", "NoValue", K08_Conclusion),
+    Comparison = "KQ"
+  ) %>%
+  select(AnonID, Cset, Mating, Decision, Comparison)
+
+qq <- qq_data %>%
+  filter(Phase == phase_label) %>%
+  mutate(
+    Decision = if_else(Q01_Q1value == "NoValue" | Q02_Q2value == "NoValue", "NoValue", Q08_Conclusion),
+    Comparison = "QQ"
+  ) %>%
+  select(AnonID, Cset, Mating, Decision, Comparison)
+
+cset <- cset_data %>%select( Cset, Type,`Cset Category (Detailed)`, `Cset Quality (voted)` ) %>%
+  rename(Category = `Cset Category (Detailed)`, CsetQuality = `Cset Quality (voted)` )
+
+responses <- bind_rows(kq, qq) %>%
+  left_join(cset, by = "Cset") %>%
+  mutate(Category = str_squish(Category), Decision = factor(Decision, levels = c("ID", "LeanID", "Insuff", "NoValue", "LeanExcl", "Excl")))
+```
+
+
+We combined the real 2024 bullets responses, computed FP/FN/inconclusive rates, and estimated uncertainty using three confidence-interval methods: naive bootstrap, examiner-clustered bootstrap, and item-clustered bootstrap.
+We then simulated a Hawthorne (test-awareness) effect by converting some conclusive decisions into inconclusive calls.
+
+Finally, we ran repeated Monte Carlo simulations to evaluate how well each CI method captured the true error rates under these study-design scenarios.
+
+
+
+```{r}
+#  Error rates + 3 CI methods + Hawthorne
+
+library(readxl)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(tidyr)
+
+file_path <- "bullets_2024.xlsx"
+
+kq_data <- read_excel(file_path, sheet = "KQ responses (n=1575)")
+qq_data <- read_excel(file_path, sheet = "QQ responses (n=1581)")                       
+
+phase_label <- "Primary (Baseline)"
+
+kq <- kq_data %>%
+  filter(Phase == phase_label) %>%
+  mutate(
+    Decision = if_else(K01_Q1value == "NoValue", "NoValue", K08_Conclusion),
+    Comparison = "KQ"
+  ) %>%
+  select(AnonID, Cset, Mating, Decision, Comparison)
+
+qq <- qq_data %>%
+  filter(Phase == phase_label) %>%
+  mutate(
+    Decision = if_else(Q01_Q1value == "NoValue" | Q02_Q2value == "NoValue", "NoValue", Q08_Conclusion),
+    Comparison = "QQ"
+  ) %>%
+  select(AnonID, Cset, Mating, Decision, Comparison)
+
+responses <- bind_rows(kq, qq) %>%
+  mutate(
+    Decision = factor(Decision, levels = c("ID","LeanID","Insuff","NoValue","LeanExcl","Excl"))
+  )
+
+# Defining what the differnt  “decision types” are as well as computing the error-rate metrics
+
+classify_calls <- function(df) {
+  df %>%
+    mutate(
+      truth = if_else(Mating == "Mated", "SameSource", "DifferentSource"),
+      call_type = case_when(
+        Decision %in% c("ID", "LeanID") ~ "ID",
+        Decision %in% c("Excl", "LeanExcl") ~ "Excl",
+        Decision %in% c("Insuff", "NoValue") ~ "Inconclusive",
+        TRUE ~ NA_character_
+      ),
+      is_fp = (truth == "DifferentSource" & call_type == "ID"),
+      is_fn = (truth == "SameSource"      & call_type == "Excl"),
+      is_inconclusive = (call_type == "Inconclusive")
+    )
+}
+
+calc_rates <- function(df) {
+  df2 <- classify_calls(df)
+
+  # denominators by the tyoe of the truth
+  n_diff <- sum(df2$truth == "DifferentSource", na.rm = TRUE)
+  n_same <- sum(df2$truth == "SameSource", na.rm = TRUE)
+
+  out <- tibble(
+    n = nrow(df2),
+    fp = sum(df2$is_fp, na.rm = TRUE),
+    fn = sum(df2$is_fn, na.rm = TRUE),
+    inconclusive = sum(df2$is_inconclusive, na.rm = TRUE),
+
+    fp_rate = if_else(n_diff > 0, sum(df2$is_fp, na.rm=TRUE) / n_diff, NA_real_),
+    fn_rate = if_else(n_same > 0, sum(df2$is_fn, na.rm=TRUE) / n_same, NA_real_),
+
+    inconclusive_rate_overall = mean(df2$is_inconclusive, na.rm = TRUE),
+    inconclusive_rate_same    = mean(df2$is_inconclusive[df2$truth == "SameSource"], na.rm = TRUE),
+    inconclusive_rate_diff    = mean(df2$is_inconclusive[df2$truth == "DifferentSource"], na.rm = TRUE)
+  )
+
+  out
+}
+
+baseline_rates <- calc_rates(responses)
+baseline_rates
+
+# Bootstrap CI helpers (percentile CI by)
+boot_ci_percentile <- function(boot_values, alpha = 0.05) {
+  stats::quantile(boot_values, probs = c(alpha/2, 1 - alpha/2), na.rm = TRUE)
+}
+
+# fubction to run the general bootstrap:
+run_bootstrap <- function(df, B = 1000, resample_fun, stat_fun) {
+  replicate(B, {
+    d_b <- resample_fun(df)
+    stat_fun(d_b)
+  })
+}
+
+# 1) CI method #1: Naive (row-level) nonparametric bootstrap
+# Naive (row-level) nonparametric bootstrap repeatedly resamples individual responses with replacement and recalculates the statistic to form a confidence interval.
+# It is “naive” because it assumes all responses are independent, ignoring clustering by examiner or item, which can make the interval too narrow.
+
+resample_rows <- function(df) {
+  df[sample.int(nrow(df), size = nrow(df), replace = TRUE), , drop = FALSE]
+}
+
+set.seed(1)
+boot_fp_naive <- run_bootstrap(
+  responses, B = 500,
+  resample_fun = resample_rows,
+  stat_fun = function(d) calc_rates(d)$fp_rate
+)
+boot_ci_percentile(boot_fp_naive)
+
+# 2)  CI method #2: Clustered bootstrap by examiner (AnonID)
+# Clustered bootstrap by examiner resamples entire examiners (AnonID) and includes all of their responses together to preserve within-examiner dependence when estimating the confidence interval.
+
+resample_cluster <- function(df, cluster_col) {
+  cl <- df[[cluster_col]]
+  clusters <- unique(cl)
+  sampled_clusters <- sample(clusters, size = length(clusters), replace = TRUE)
+
+  d_b <- map_dfr(sampled_clusters, ~ df[cl == .x, , drop = FALSE])
+  d_b
+}
+
+set.seed(2)
+boot_fp_examiner <- run_bootstrap(
+  responses, B = 500,
+  resample_fun = function(d) resample_cluster(d, "AnonID"),
+  stat_fun = function(d) calc_rates(d)$fp_rate
+)
+boot_ci_percentile(boot_fp_examiner)
+
+# 3) CI method #3: Clustered bootstrap by item set (Cset)
+# Clustered bootstrap by item set resamples entire item sets (Cset) and keeps all responses for each selected item together.
+# This keeps the dependence between responses on the same evidence item when estimating the confidence interval.
+
+
+set.seed(3)
+boot_fp_item <- run_bootstrap(
+  responses, B = 500,
+  resample_fun = function(d) resample_cluster(d, "Cset"),
+  stat_fun = function(d) calc_rates(d)$fp_rate
+)
+boot_ci_percentile(boot_fp_item)
+
+# Hawthorne effect addition: simulating the  "discovered/aware" items
+#  discovered items push MORE inconclusive outcomes.
+#
+#   How to do it:
+
+#   - Assign discovered ~ Bernoulli(p_discovered)
+#   - If discovered AND call is conclusive , flip to Inconclusive
+#     with probability delta.
+#   This matches the idea of the effect which is if there is awareness then people make -> safer calls.
+
+add_hawthorne <- function(df, p_discovered = 0.191, delta = 0.20, seed = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+
+  df2 <- classify_calls(df) %>%
+    mutate(
+      discovered = rbinom(n(), 1, p_discovered),
+      conclusive = (call_type %in% c("ID","Excl"))
+    )
+
+  flip <- (df2$discovered == 1 & df2$conclusive == TRUE & runif(nrow(df2)) < delta)
+
+  df2$Decision <- as.character(df2$Decision)
+  df2$Decision[flip] <- "Insuff"
+  df2$Decision <- factor(df2$Decision, levels = c("ID","LeanID","Insuff","NoValue","LeanExcl","Excl"))
+
+  df2 %>% select(names(df))
+}
+
+df_h <- add_hawthorne(responses, p_discovered = 0.191, delta = 0.25, seed = 4)
+calc_rates(df_h)
+
+```
+
+
+- We used the 2024 bullets dataset as our real-data baseline and then layered resampling and a simple Hawthorne-effect simulation to study how test awareness affects estimated error rates and inconclusive rates, and how reliable different confidence interval (CI) procedures are when responses are clustered by examiner and by item set.
+
+- We cleaned and combined the KQ and QQ response sheets and recoded each response into three outcome types (ID, Exclusion, Inconclusive). Using the ground truth from 'Mating' (mated vs non-mated), we defined false positives as ID calls on non-mated comparisons and false negatives as Exclusion calls on mated comparisons. From the baseline data (n = 2884), we estimated an FP rate of 0.0668 (128 FP), an FN rate of 0.0496 (48 FN), and an overall inconclusive rate of 0.409 (1179 inconclusive). We also saw inconclusives differed by truth: 0.266 for same-source (mated) vs 0.481 for different-source (non-mated).
+
+- We implemented three CI methods to reflect different dependence structures:
+(1) a naive nonparametric bootstrap that resamples individual responses (rows)
+(2) a clustered bootstrap that resamples examiners (AnonID) and keeps all of their responses together
+(3) a clustered bootstrap that resamples item sets (Cset) and keeps all responses for each selected item together.
+
+For FP rate, the naive bootstrap 95% CI was 0.0557-0.0765, the item-clustered CI was 0.0559-0.0786, and the examiner-clustered CI was much wider at 0.0383-0.1039, suggesting examiner-level clustering substantially increases uncertainty and that naive resampling can be overly optimistic when examiner effects induce correlation.
+
+- To incorporate the Hawthorne effect, we simulated a “discovered/aware” condition by randomly labeling about 19.1% of trials as discovered and then flipping a fraction of conclusive calls to inconclusive with probability δ = 0.25. Under this condition, we observed the expected shift toward conservatism: the overall inconclusive rate increased from 0.409 to 0.434 (1179 to 1252), while FP decreased slightly (0.0668 to 0.0652, 128 to 125) and FN decreased (0.0496 to 0.0455, 48 → 44). Inconclusive rates also increased within each truth category: 0.266 to 0.300 for same-source and 0.481 to 0.502 for different-source.
+
+
+
+
+
+--------------------------
+
+Feb 24, 2026
+
+
+
+
+It would be good if the data statisticsllt has a coverage of around 95% 
+has reasonably small width
+stable across differnt dependence structures.
+
+Across many simulated datasets with known true FP rate, how oftern
+
+Varying the Item variance 
+
+Item level clustering
+
+This tests:
+
+is dependence primariltit  examiner-driven or item driven?
+
+
+
+example conceptual model:
+
+compare:
+naive = narrow but u
+
+
+
+
