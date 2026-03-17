@@ -1,0 +1,203 @@
+---
+title: "Polygonal vs Non-Polygonal and KQ vs QQ quality views"
+output: pdf_document
+---
+
+```{r, echo=FALSE}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(scales)
+library(purrr)
+```
+
+Importing the Data
+
+```{r, echo=FALSE}
+file_path <- "data/bullets_2024.xlsx"
+
+kq_data <- read_excel(file_path, sheet = "KQ responses (n=1575)")
+qq_data <- read_excel(file_path, sheet = "QQ responses (n=1581)")
+cset_data <- read_excel(file_path, sheet = "Cset (n=1240)")
+```
+
+Data Cleaning
+
+```{r, echo=FALSE}
+phase_label <- "Primary (Baseline)"
+
+kq <- kq_data %>%
+  filter(Phase == phase_label) %>%
+  mutate(
+    Difficulty = if_else(K01_Q1value == "NoValue", "NoValue", K09_Difficulty),
+    Comparison = "KQ"
+  ) %>%
+  select(AnonID, Cset, Mating, Difficulty, Comparison)
+
+qq <- qq_data %>%
+  filter(Phase == phase_label) %>%
+  mutate(
+    Difficulty = if_else(Q01_Q1value == "NoValue" | Q02_Q2value == "NoValue", "NoValue", Q09_Difficulty),
+    Comparison = "QQ"
+  ) %>%
+  select(AnonID, Cset, Mating, Difficulty, Comparison)
+
+cset <- cset_data %>%select( Cset, Type,`Cset Category (Detailed)`, `Cset Quality (voted)` ) %>%
+  rename(Category = `Cset Category (Detailed)`, CsetQuality = `Cset Quality (voted)` )
+
+responses <- bind_rows(kq, qq) %>%
+  left_join(cset, by = "Cset") %>%
+  mutate(Category = str_squish(Category), Difficulty = factor(Difficulty, levels = c("VEasy", "Easy", "Norm", "NoValue", "Diff", "VDiff")))
+```
+
+Data Cleaning for Item Sets with at least one No Value response
+
+```{r, echo=FALSE}
+# KQ: restrict to Primary (Baseline) then filter Csets where any examiner has NoValue
+kq_primary <- kq_data %>%
+  filter(Phase == "Primary (Baseline)")
+
+kq_items_with_NoValue <- kq_primary %>%
+  group_by(Cset) %>%
+  filter(any(K08_Conclusion == "NoValue")) %>%
+  ungroup()
+
+
+# QQ: same idea
+qq_primary <- qq_data %>%
+  filter(Phase == "Primary (Baseline)")
+
+qq_items_with_NoValue <- qq_primary %>%
+  group_by(Cset) %>%
+  filter(any(Q08_Conclusion == "NoValue")) %>%
+  ungroup()
+```
+
+
+KQ vs QQ decision rates by quality (heatmap)
+
+```{r, echo=FALSE}
+quality_data <- responses %>%
+  filter(!str_detect(Category, "Polygonal"), !str_detect(Category, "FMJ-JHP|JHP-FMJ"), !str_detect(Category, "Diff Caliber") ) %>% filter(!is.na(CsetQuality))
+
+plot_quality <- quality_data %>%
+  count(Mating, Comparison, CsetQuality, Difficulty, name = "n") %>%
+  group_by(Mating, Comparison, CsetQuality) %>%
+  mutate(pct = n / sum(n)) %>%
+  ungroup()
+
+ggplot(plot_quality, aes(x = CsetQuality, y = Difficulty, fill = pct)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = percent(pct, accuracy = 0.1)), size = 2.6) +
+  facet_grid(Mating ~ Comparison) +
+  scale_fill_gradient(low = "white", high = "darkblue", labels = percent) +
+  labs( title = "Difficulty Decision Distribution by Quality (KQ vs QQ)",
+    x = "Quality",
+    y = NULL, fill = "% of responses"
+  ) 
+```
+
+```{r, echo=FALSE}
+## starting from your script, after plot_quality is created
+## plot_quality has: Mating, Comparison (KQ/QQ), CsetQuality (A:A, A:B, A:C,...),
+## Difficulty (VEasy,...), pct (proportion of responses)  [file:3]
+
+# keep only qualities you want in the toy bank
+toy_qualities <- c("A:A", "A:B", "A:C")
+
+diff_probs <- plot_quality %>%
+  filter(CsetQuality %in% toy_qualities) %>%
+  select(Mating, Comparison, CsetQuality, Difficulty, pct) %>%
+  group_by(Mating, Comparison, CsetQuality) %>%
+  mutate(p = pct / sum(pct)) %>%           # re‑normalise, just in case
+  ungroup()
+
+# helper: simulate one scenario -----------------------------------------
+simulate_scenario <- function(
+  n_items      = 10000,
+  bank_mix_KQ  = c("A:A" = 0.5, "A:B" = 0.3, "A:C" = 0.2),
+  bank_mix_QQ  = c("A:A" = 0.5, "A:B" = 0.3, "A:C" = 0.2)
+) {
+  bank_mix <- bind_rows(
+    tibble(Comparison = "KQ",
+           CsetQuality = names(bank_mix_KQ),
+           bank_p = as.numeric(bank_mix_KQ)),
+    tibble(Comparison = "QQ",
+           CsetQuality = names(bank_mix_QQ),
+           bank_p = as.numeric(bank_mix_QQ))
+  )
+
+  # expand to per‑item draws
+  draws <- tibble(item = 1:n_items) %>%
+    crossing(Mating = c("Mated","Nonmated"),
+             Comparison = c("KQ","QQ")) %>%
+    group_by(Mating, Comparison) %>%
+    mutate(
+      # sample item quality for each item from the chosen bank mix
+      CsetQuality = sample(
+        bank_mix$CsetQuality[bank_mix$Comparison == unique(Comparison)],
+        size = n(),
+        replace = TRUE,
+        prob = bank_mix$bank_p[bank_mix$Comparison == unique(Comparison)]
+      )
+    ) %>%
+    ungroup() %>%
+    left_join(diff_probs,
+              by = c("Mating","Comparison","CsetQuality")) %>%
+    group_by(item, Mating, Comparison, CsetQuality) %>%
+    summarise(
+      Difficulty = sample(Difficulty, size = 1, prob = p),
+      .groups = "drop"
+    )
+
+  # summarise simulated difficulty distribution
+  draws %>%
+    count(Mating, Comparison, Difficulty, name = "n") %>%
+    group_by(Mating, Comparison) %>%
+    mutate(pct = n / sum(n)) %>%
+    ungroup()
+}
+
+# example: baseline bank composition (same KQ vs QQ)
+sim_baseline <- simulate_scenario(
+  n_items = 20000,
+  bank_mix_KQ = c("A:A" = 0.6, "A:B" = 0.3, "A:C" = 0.1),
+  bank_mix_QQ = c("A:A" = 0.6, "A:B" = 0.3, "A:C" = 0.1)
+)
+
+# example: QQ has more low quality (A:C) than KQ
+sim_shifted <- simulate_scenario(
+  n_items = 20000,
+  bank_mix_KQ = c("A:A" = 0.6, "A:B" = 0.3, "A:C" = 0.1),
+  bank_mix_QQ = c("A:A" = 0.3, "A:B" = 0.3, "A:C" = 0.4)
+)
+
+# quick comparison table of overall difficulty rates
+sim_compare <- bind_rows(
+  sim_baseline %>% mutate(scenario = "baseline"),
+  sim_shifted  %>% mutate(scenario = "QQ_more_AC")
+)
+
+sim_compare
+
+```
+
+```{r, echo=FALSE}
+ggplot(sim_compare,
+       aes(x = Difficulty, y = pct, fill = scenario)) +
+  geom_col(position = "dodge") +
+  facet_grid(Mating ~ Comparison) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = "Simulated % of decisions",
+       title = "Effect of item bank quality mix on difficulty decisions")
+
+```
+
+
+
+
+
+
+
