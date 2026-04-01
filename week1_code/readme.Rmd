@@ -1,0 +1,48 @@
+---
+title: "readme"
+output: html_document
+---
+
+# Layer 1 — Data & Model Fitting
+I load real data from bullets_2024.xlsx and fit two mixed models on the Primary (Baseline) phase:
+fit_inc — predicts whether an examiner calls a cset inconclusive (Insuff), using difficulty, quality, and random effects for examiner and cset identity.
+fit_err — predicts whether a conclusive decision was an error, using the same predictors but only an examiner random effect (cset random effect was dropped due to convergence failure from near-complete separation in rare error cells). VEasy difficulty was collapsed into Easy for the same reason.
+These two fitted models provide all the coefficients and random effect SDs that parameterise everything downstream.
+
+# Layer 2 — Core Simulation Functions
+one_simulation() generates one synthetic crossed dataset of examiners × csets. It works in six steps:
+
+1. Draws examiner random effects from N(0, σ²_exam)
+2. Draws cset random effects from N(0, σ²_cset)
+3. Crosses all examiners with all csets
+4. Computes inconclusive probability for each pair via the logit model and samples Inconclusive ~ Bernoulli(p_inc)
+5. For conclusive rows only, computes error probability and samples Error ~ Bernoulli(p_err) — using index-based assignment to avoid NA propagation into rbinom()
+6. Reconstructs a Decision_D column (ID / Excl / Insuff, with false IDs and false exclusions for errors)
+
+bootstrap_statistic() summarises any dataframe into inconclusive and error rates at four levels — overall, by Difficulty × Mating cell, by examiner, and by cset. It returns a named list with $overall, $by_row, $by_examiner, $by_cset.
+true_parameters() computes the ground-truth inc_rate and err_rate for a given scenario without generating any data. It draws 50,000 covariate combinations and random effects from their distributions, computes inv_logit(η) for each draw, and averages — this Monte Carlo integration is necessary because the logit link is nonlinear so E[inv_logit(η)] ≠ inv_logit(E[η]). The true error rate is additionally weighted by (1 − p_inc) to condition on the observation being conclusive.
+
+# Layer 3 — Model Refitting (fit_models_once + extract_var_prop)
+extract_var_prop() takes a fitted glmer object and computes the variance partition — how much of the total latent variance is attributable to examiners, csets, and residual (which is fixed at π²/3 for binary outcomes on the logit scale).
+fit_models_once() refits both fit_inc and fit_err on a simulated dataset, wrapped in tryCatch so that convergence failures return NULL rather than crashing the loop. It returns the two model objects plus their variance partitions. This lets you check whether the simulation produces data where the variance structure is recoverable — i.e. whether the random effects you put in can be estimated back 
+
+# Layer 4 — Sim_boot_cov() (The Master Function)
+This is the single entry point. It takes all scenario parameters explicitly (no ...) and runs the full study. Internally it:
+
+Splits arguments into true_par_args (for true_parameters()) and sim_args (adds n_examiners, nKQ, nQQ for one_simulation())
+Computes ground-truth rates once via MC integration
+Loops M times — each repetition generates one dataset, optionally refits the models, then runs B bootstrap resamples and builds a percentile CI
+Records whether each CI contains the true value (inc_covered, err_covered)
+Summarises coverage rates and, if fit_each_time = TRUE, the average variance partition across repetitions
+
+Outputs
+Sim_boot_cov() returns a named list:
+coverage_summary: One row per statistic — true value, coverage rate, mean CI width, nominal level
+repetitions: M rows — observed rate, CI bounds, and coverage indicator per repetitiontrue_parameters
+Ground-truth: inc_rate and err_rate for the scenario
+variance_summary: Mean examiner / cset / residual variance shares across M repetitions
+variance_repetitions: Full M-row table of variance partitions per repetition
+last_boot_replicates: B-row bootstrap distribution from the final repetition (keep_last = TRUE)
+simulated_data: The synthetic dataset from the final repetition (return_data = TRUE)
+last_fits: The fitted model objects from the final repetition (keep_last_fits = TRUE)
+
