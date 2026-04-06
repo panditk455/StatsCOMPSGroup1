@@ -12,7 +12,6 @@ output:
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 ```
 
-
 # Libraries
 
 ```{r libraries}
@@ -26,6 +25,7 @@ library(ggplot2)
 library(scales)
 library(purrr)
 ```
+
 
 
 #  Load and Clean Real Data
@@ -171,7 +171,7 @@ QUAL1_LEVELS <- c("A", "B", "C")
 QUAL2_LEVELS <- c("A", "B", "C", "D")
 ```
 
-## b. one_simulation() - this generate one complete fake simulation study
+##  one_simulation() - this generate one complete fake simulation study
 
 # Building one full fake study here.
 # Inputs control difficulty, skill mix, and Hawthorne effects.
@@ -781,7 +781,7 @@ for (nm in names(checks)) {
 }
 
 if (!all(checks)) {
-  stop("VALIDATION FAILED one or more checks above did not pass. ",
+  stop("VALIDATION FAILED because one or more checks above did not pass. ",
        "Inspect true_parameters and coverage_summary before running the full study.")
 } else {
   cat("\nAll checks passed. Pipeline is wotrking— proceeding to full run.\n")
@@ -791,6 +791,10 @@ if (!all(checks)) {
 }
 ```
 
+
+
+The models fit on the real data, and those values are now hardcoded into the simulation.  
+The quick checks passed, so the pipeline looks good and is ready for the full run.
 
 
 
@@ -827,11 +831,10 @@ print(scenario_grid)
 ```
 
 
-# 6. Run All 36 Scenarios × 3 Methods
+#  Running All 36 Scenarios × 3 Methods
 
-# Runtime: ~3-5 min per scenario; total ~3-4 hrs. Use cache=TRUE and run overnight.
 
-```{r run-all, cache=TRUE}
+```{r run-all, cache = TRUE}
 M_sim   <- 200   # increase to 500 for final paper
 B_sim   <- 300   # increase to 500 for final paper
 methods <- c("row", "examiner", "cset")
@@ -861,11 +864,9 @@ for (i in seq_len(nrow(scenario_grid))) {
 }
 ```
 
----
+#  Results
 
-# 7. Compile Results
-
-```{r compile}
+```{r }
 results_table <- pmap_dfr(scenario_grid, function(diff_label, skill_label, Hawthorne) {
   map_dfr(methods, function(method) {
     key <- paste0(diff_label, "_", skill_label, "_hw", Hawthorne, "_", method)
@@ -878,13 +879,14 @@ results_table <- pmap_dfr(scenario_grid, function(diff_label, skill_label, Hawth
          true_value, coverage_rate, mean_ci_width, nominal_coverage) %>%
   arrange(Difficulty, Skill, Hawthorne, Method, statistic)
 
-# Show error rate results — primary outcome for the paper
-cat("=== Error rate coverage across all scenarios ===\n")
+# Show error rate results — this will be primary outcome for the paper for us
+cat(" Error rate coverage across all scenarios \n")
 results_table %>% filter(statistic == "err_rate") %>% print(n = Inf)
 
-# Save results so SimulationResults.Rmd can load them without rerunning
+# Saving results so SimulationResults.Rmd can load them without rerunning
 saveRDS(results_table, "results_table.rds")
 cat("results_table saved to results_table.rds\n")
 ```
 
----
+
+
