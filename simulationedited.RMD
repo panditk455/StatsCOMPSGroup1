@@ -12,7 +12,6 @@ output:
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 ```
 
----
 
 # Libraries
 
@@ -28,7 +27,6 @@ library(scales)
 library(purrr)
 ```
 
----
 
 #  Load and Clean Real Data
 
