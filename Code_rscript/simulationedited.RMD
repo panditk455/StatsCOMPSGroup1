@@ -328,7 +328,69 @@ one_simulation <- function(
         TRUE                              ~ NA_character_
       )
     )
+  sim_data
 }
+```
+
+```{r}
+
+
+props <- responses2 %>%
+  distinct(Cset, .keep_all = TRUE) %>%
+  summarise(
+    # Difficulty
+   p_VEasy = mean(Difficulty == "VEasy", na.rm = TRUE),
+    p_Easy  = mean(Difficulty == "Easy",  na.rm = TRUE),
+    p_Norm  = mean(Difficulty == "Norm",  na.rm = TRUE),
+    p_Diff  = mean(Difficulty == "Diff",  na.rm = TRUE),
+    p_VDiff = mean(Difficulty == "VDiff", na.rm = TRUE),
+    # Quality1
+    p_Q1_A  = mean(Quality1 == "A"),
+    p_Q1_B  = mean(Quality1 == "B"),
+    p_Q1_C  = mean(Quality1 == "C"),
+    # Quality2
+    p_Q2_A  = mean(Quality2 == "A"),
+    p_Q2_B  = mean(Quality2 == "B"),
+    p_Q2_C  = mean(Quality2 == "C"),
+    p_Q2_D  = mean(Quality2 == "D"),
+    # Mating
+    mated   = mean(Mating == "Mated"),
+    # Comparison counts
+    nKQ     = sum(Comparison == "KQ"),
+    nQQ     = sum(Comparison == "QQ")
+  )
+
+one_simulation(
+  per_diff       = c(props$p_VEasy, props$p_Easy, props$p_Norm, props$p_Diff, props$p_VDiff),
+  per_exam_skill = rep(1/3, 3),          # if skill is unobserved, keep uniform
+  per_quality1   = c(props$p_Q1_A, props$p_Q1_B, props$p_Q1_C),
+  per_quality2   = c(props$p_Q2_A, props$p_Q2_B, props$p_Q2_C, props$p_Q2_D),
+  Hawthorne      = 0,
+  n_examiners    = n_distinct(responses2$AnonID),
+  nKQ            = props$nKQ,
+  nQQ            = props$nQQ,
+  mated_prop     = props$mated,
+  seed           = 42                    # fix seed for reproducibility
+) -> test
+
+test %>%
+  summarise(
+    n_total        = n(),
+    n_inconclusive = sum(Inconclusive == 1, na.rm = TRUE),
+    n_errors       = sum(Error == 1,        na.rm = TRUE),
+    n_conclusive   = sum(Inconclusive == 0, na.rm = TRUE),
+    prop_inconclusive = n_inconclusive / n_total,
+    prop_error        = n_errors / n_total  
+  )
+responses2 %>%
+  summarise(
+    n_total        = n(),
+    n_inconclusive = sum(Inconclusive == 1, na.rm = TRUE),
+    n_errors       = sum(Error == 1,        na.rm = TRUE),
+    n_conclusive   = sum(Inconclusive == 0, na.rm = TRUE),
+    prop_inconclusive = n_inconclusive / n_total,
+    prop_error        = n_errors / n_total  
+  )
 ```
 
 ## bootstrap_statistic() — summarise one dataset
