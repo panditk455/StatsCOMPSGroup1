@@ -12,14 +12,6 @@ output:
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 ```
 
-# Overview
-
-This file loads the coverage results produced by `simulationedited.RMD` and generates
-all figures and conclusion summaries. It does NOT rerun the simulation — the simulation
-was already run and its results saved as `results_table.rds`.
-
-**Dependency**: Run `simulationedited.RMD` first to produce `results_table.rds`.
-
 ---
 
 # 0. Libraries
