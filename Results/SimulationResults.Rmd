@@ -238,7 +238,7 @@ results_table %>%
   print()
 ```
 
-## 6e. Plain-English Conclusion
+## Conclusion
 
 ```{r conclusion-narrative}
 best_method <- results_table %>%
@@ -256,7 +256,7 @@ avg_cov <- results_table %>%
   summarise(cov = mean(coverage_rate), .groups = "drop") %>%
   deframe()
 
-cat("\n=== PLAIN-ENGLISH CONCLUSION ===\n\n")
+cat("\n=== CONCLUSION ===\n\n")
 cat(sprintf(
 "Across all 36 scenarios (3 difficulty mixes × 3 skill mixes × 4 Hawthorne levels),
 the %s bootstrap achieved the closest-to-nominal 95%% coverage most frequently.
@@ -266,13 +266,6 @@ Average empirical coverage:
   Examiner-clustered:   %.1f%%
   Cset-clustered:       %.1f%%
 
-These results indicate that the dominant clustering level drives the dependence
-structure of the data, and that naive row resampling may fail to capture this
-structure. The recommended bootstrap method for reporting error rate confidence
-intervals in future forensic bullet studies is the %s bootstrap.
-
-Note: if coverage is similar between two clustered methods but one produces narrower
-CIs, that method should be preferred for practical reporting.
 ",
   best_method,
   avg_cov["row"]      * 100,
@@ -284,8 +277,3 @@ CIs, that method should be preferred for practical reporting.
 
 ---
 
-# 7. Session Info
-
-```{r session-info}
-sessionInfo()
-```
