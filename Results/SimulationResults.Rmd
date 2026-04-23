@@ -1,0 +1,299 @@
+---
+title: "Part 3 – Simulation Results: Figures and Conclusions"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Overview
+
+This file loads the coverage results produced by `simulationedited.RMD` and generates
+all figures and conclusion summaries. It does NOT rerun the simulation — the simulation
+was already run and its results saved as `results_table.rds`.
+
+**Dependency**: Run `simulationedited.RMD` first to produce `results_table.rds`.
+
+---
+
+# 0. Libraries
+
+```{r libraries}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+library(purrr)
+```
+
+---
+
+# 1. Load Results
+
+```{r load-results}
+results_table <- readRDS("results_table.rds")
+
+cat("Scenarios loaded:", nrow(results_table) / 2, "\n")   # /2 because inc + err rows
+cat("Methods:", paste(unique(results_table$Method), collapse = ", "), "\n")
+cat("Difficulty levels:", paste(unique(results_table$Difficulty), collapse = ", "), "\n")
+cat("Skill levels:", paste(unique(results_table$Skill), collapse = ", "), "\n")
+cat("Hawthorne levels:", paste(sort(unique(results_table$Hawthorne)), collapse = ", "), "\n")
+
+# Quick sanity check: confirm no missing coverage values
+n_missing <- sum(is.na(results_table$coverage_rate))
+if (n_missing > 0) warning(n_missing, " missing coverage_rate values found.")
+```
+
+---
+
+# 2. Figure 1 — Coverage by method (no Hawthorne effect)
+
+**What to look for:**
+- Does any method stay reliably near 0.95 across all Difficulty × Skill combinations?
+- Does the Naive (row) bootstrap fall below 0.95? → confirms real clustering exists
+- Which clustered method tracks the dashed line better? → reveals dominant clustering level
+
+```{r fig1, fig.width=10, fig.height=5}
+results_table %>%
+  filter(Hawthorne == 0, statistic == "err_rate") %>%
+  mutate(Method = recode(Method,
+                         "row"      = "Naive (row)",
+                         "examiner" = "Examiner-clustered",
+                         "cset"     = "Cset-clustered")) %>%
+  ggplot(aes(x = Skill, y = coverage_rate, colour = Method, group = Method)) +
+  geom_hline(yintercept = 0.95, linetype = "dashed", colour = "grey40", linewidth = 0.8) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  facet_wrap(~Difficulty, ncol = 3) +
+  scale_y_continuous(limits = c(0.5, 1.0), labels = percent) +
+  scale_colour_manual(values = c("Naive (row)"         = "#e41a1c",
+                                 "Examiner-clustered"  = "#377eb8",
+                                 "Cset-clustered"      = "#4daf4a")) +
+  labs(title    = "Figure 1: Error-rate CI coverage by bootstrap method (Hawthorne = 0)",
+       subtitle = "Dashed line = 95% nominal target. Values below line = CIs too narrow.",
+       x = "Examiner skill mix", y = "Empirical coverage", colour = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+---
+
+# 3. Figure 2 — Coverage vs. Hawthorne delta
+
+**What to look for:**
+- Does coverage degrade as Hawthorne increases? → bootstrap not adjusting for inc-rate shift
+- Is one method more robust to Hawthorne than the others?
+
+```{r fig2, fig.width=11, fig.height=7}
+results_table %>%
+  filter(statistic == "err_rate") %>%
+  mutate(Method = recode(Method,
+                         "row"      = "Naive",
+                         "examiner" = "Examiner",
+                         "cset"     = "Cset")) %>%
+  ggplot(aes(x = factor(Hawthorne), y = coverage_rate,
+             colour = Method, group = Method)) +
+  geom_hline(yintercept = 0.95, linetype = "dashed", colour = "grey40", linewidth = 0.7) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2.5) +
+  facet_grid(Skill ~ Difficulty) +
+  scale_y_continuous(limits = c(0.5, 1.0), labels = percent) +
+  scale_colour_manual(values = c("Naive"    = "#e41a1c",
+                                 "Examiner" = "#377eb8",
+                                 "Cset"     = "#4daf4a")) +
+  labs(title    = "Figure 2: How Hawthorne delta affects error-rate coverage",
+       subtitle = "Each panel = one Difficulty × Skill combination",
+       x = "Hawthorne delta", y = "Empirical coverage", colour = "Method") +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom")
+```
+
+---
+
+# 4. Figure 3 — CI width vs. Hawthorne delta
+
+**What to look for:**
+- Coverage alone doesn't determine the best method — a very wide CI always covers but is useless.
+- Best method: coverage ≈ 0.95 AND narrowest CI width.
+
+```{r fig3, fig.width=11, fig.height=7}
+results_table %>%
+  filter(statistic == "err_rate") %>%
+  mutate(Method   = recode(Method,
+                           "row"      = "Naive",
+                           "examiner" = "Examiner",
+                           "cset"     = "Cset"),
+         Scenario = paste0(Difficulty, " / ", Skill)) %>%
+  ggplot(aes(x = factor(Hawthorne), y = mean_ci_width,
+             colour = Method, group = Method)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2.5) +
+  facet_wrap(~Scenario, ncol = 3) +
+  scale_colour_manual(values = c("Naive"    = "#e41a1c",
+                                 "Examiner" = "#377eb8",
+                                 "Cset"     = "#4daf4a")) +
+  labs(title    = "Figure 3: Mean 95% CI width for error rate",
+       subtitle = "Narrower = more precise. Best method: coverage ≈ 0.95 AND narrowest CI.",
+       x = "Hawthorne delta", y = "Mean CI width", colour = "Method") +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom")
+```
+
+---
+
+# 5. Figure 4 — Full heatmap (all 36 scenarios, all methods)
+
+**What to look for:**
+- Green = well-calibrated (coverage ≈ 95%)
+- Red = undercoverage (CIs too narrow — bootstrap ignores real dependence)
+- Yellow = acceptable but not ideal
+
+```{r fig4, fig.width=14, fig.height=7}
+results_table %>%
+  filter(statistic == "err_rate") %>%
+  mutate(
+    Scenario = paste0(Difficulty, " / ", Skill),
+    Method   = recode(Method,
+                      "row"      = "Naive",
+                      "examiner" = "Examiner",
+                      "cset"     = "Cset")
+  ) %>%
+  ggplot(aes(x = Method, y = Scenario, fill = coverage_rate)) +
+  geom_tile(colour = "white", linewidth = 0.6) +
+  geom_text(aes(label = percent(coverage_rate, accuracy = 1)),
+            size = 3.2, fontface = "bold") +
+  facet_wrap(~Hawthorne, ncol = 4,
+             labeller = labeller(Hawthorne = function(x) paste0("Hawthorne δ = ", x))) +
+  scale_fill_gradient2(low = "#d73027", mid = "#ffffbf", high = "#1a9850",
+                       midpoint = 0.95, limits = c(0.5, 1.0),
+                       labels = percent, name = "Coverage") +
+  labs(title    = "Figure 4: Bootstrap coverage (error rate) — all 36 scenarios",
+       subtitle = "Green = ~95% nominal. Red = undercoverage. Yellow = borderline.",
+       x = NULL, y = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1),
+        legend.position = "right")
+```
+
+---
+
+# 6. Conclusions
+
+## 6a. Which method wins most often?
+
+```{r conclusion-winner}
+cat("=== Which method achieves closest-to-nominal coverage most often? ===\n")
+results_table %>%
+  filter(statistic == "err_rate") %>%
+  group_by(Difficulty, Skill, Hawthorne) %>%
+  slice_max(coverage_rate, with_ties = FALSE) %>%
+  ungroup() %>%
+  count(Method, name = "n_scenarios_best") %>%
+  arrange(desc(n_scenarios_best)) %>%
+  print()
+```
+
+## 6b. Mean coverage and CI width by method
+
+```{r conclusion-summary}
+cat("=== Mean coverage and CI width by method (error rate) ===\n")
+results_table %>%
+  filter(statistic == "err_rate") %>%
+  group_by(Method) %>%
+  summarise(
+    Mean_Coverage = mean(coverage_rate),
+    SD_Coverage   = sd(coverage_rate),
+    Min_Coverage  = min(coverage_rate),
+    Mean_Width    = mean(mean_ci_width),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(Mean_Coverage)) %>%
+  print()
+```
+
+## 6c. Effect of Hawthorne delta on coverage
+
+```{r conclusion-hawthorne}
+cat("=== Mean coverage by Hawthorne level, by method (error rate) ===\n")
+results_table %>%
+  filter(statistic == "err_rate") %>%
+  group_by(Hawthorne, Method) %>%
+  summarise(Mean_Coverage = mean(coverage_rate), .groups = "drop") %>%
+  pivot_wider(names_from = Method, values_from = Mean_Coverage) %>%
+  arrange(Hawthorne) %>%
+  print()
+```
+
+## 6d. Inconclusive rate (secondary outcome)
+
+```{r conclusion-inc-rate}
+cat("=== Mean coverage and CI width by method (inconclusive rate) ===\n")
+results_table %>%
+  filter(statistic == "inc_rate") %>%
+  group_by(Method) %>%
+  summarise(Mean_Coverage = mean(coverage_rate),
+            SD_Coverage   = sd(coverage_rate),
+            Min_Coverage  = min(coverage_rate),
+            Mean_Width    = mean(mean_ci_width),
+            .groups = "drop") %>%
+  arrange(desc(Mean_Coverage)) %>%
+  print()
+```
+
+## 6e. Plain-English Conclusion
+
+```{r conclusion-narrative}
+best_method <- results_table %>%
+  filter(statistic == "err_rate") %>%
+  group_by(Difficulty, Skill, Hawthorne) %>%
+  slice_max(coverage_rate, with_ties = FALSE) %>%
+  ungroup() %>%
+  count(Method) %>%
+  slice_max(n) %>%
+  pull(Method)
+
+avg_cov <- results_table %>%
+  filter(statistic == "err_rate") %>%
+  group_by(Method) %>%
+  summarise(cov = mean(coverage_rate), .groups = "drop") %>%
+  deframe()
+
+cat("\n=== PLAIN-ENGLISH CONCLUSION ===\n\n")
+cat(sprintf(
+"Across all 36 scenarios (3 difficulty mixes × 3 skill mixes × 4 Hawthorne levels),
+the %s bootstrap achieved the closest-to-nominal 95%% coverage most frequently.
+
+Average empirical coverage:
+  Row (naive):          %.1f%%
+  Examiner-clustered:   %.1f%%
+  Cset-clustered:       %.1f%%
+
+These results indicate that the dominant clustering level drives the dependence
+structure of the data, and that naive row resampling may fail to capture this
+structure. The recommended bootstrap method for reporting error rate confidence
+intervals in future forensic bullet studies is the %s bootstrap.
+
+Note: if coverage is similar between two clustered methods but one produces narrower
+CIs, that method should be preferred for practical reporting.
+",
+  best_method,
+  avg_cov["row"]      * 100,
+  avg_cov["examiner"] * 100,
+  avg_cov["cset"]     * 100,
+  best_method
+))
+```
+
+---
+
+# 7. Session Info
+
+```{r session-info}
+sessionInfo()
+```
