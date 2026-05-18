@@ -1,0 +1,28 @@
+---
+title: "compile into csv"
+output: html_document
+---
+
+```{r}
+files <- list.files(path = ".", pattern = "\\.rds$", full.names = TRUE)
+
+for (f in files) {
+  data <- readRDS(f)
+ 
+  # only take the clean table
+  if (!is.null(data$table)) {
+    out_name <- sub("\\.rds$", ".csv", basename(f))
+   
+    write.csv(data$table, out_name, row.names = FALSE)
+  } else {
+    message("Skipped: ", f, " (no table found)")
+  }
+}
+```
+
+
+```{r}
+situation1_48 <- bind_rows(mget(paste0("result_s", 1:48)))
+write.csv(situation1_48, "situation1_48.csv", row.names = FALSE)
+```
+

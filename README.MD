@@ -1,212 +1,154 @@
-# Exploring Error Rates in Forensic Science  
-**STATS COMPS**  
-Kritika Pandit, Cici Wang, Nicholas  
-Prof. Amanda Luby  
-17 Feb 2026  
+# Getting Uncertainty Right: Bootstrap Methods for Clustered Forensic Firearm Examination Data
+
+**Carleton College Statistics COMPS — Group 1**
+Kritika Pandit, Cici Wang, Nicholas Chang
+Advisor: Prof. Amanda Luby | Winter/Spring 2026
 
 ---
 
-## Project Context
+## Overview
 
-The Hawthorne Effect is a phenomenon where individuals alter their behavior—typically increasing performance or productivity—due to their awareness of being observed or receiving special attention from researchers or supervisors. Forensic science has been working on measuring the error rates of human factors in identifying firearms, fingerprints, and others. However, introducing the Hawthorne effect would change the previous study’s assumptions greatly. Most of the previous studies are conducted under the “discovered” assumption, that is all examiners are aware that they are being tested. The only study (Scurich et. al) which evaluates this effect suggests that the inconclusive rate for discovered items was 56.4%, while the inconclusive rate for undiscovered test items was 39.3%. Motivated by this study, we hope to further investigate how specifically would Hawthorne Effect influence error rate (false positive and false negative rates) and the potential interacting factors of test banks’ quality, difficulty, and test designs.  
+Forensic firearm examination data have a two-level clustered structure: multiple examiners evaluate overlapping sets of cartridge case comparisons (csets). Standard bootstrap confidence intervals ignore this structure, understating uncertainty by 25–35 percentage points.
 
----
+This project compares four bootstrap methods for constructing confidence intervals for the **error rate** and **inconclusive rate**:
 
-## Literature Review
+| Method | Description |
+|---|---|
+| Naive (row) | Treats every observation as independent — ignores all clustering |
+| Examiner-cluster | Resamples whole examiners |
+| Cset-cluster | Resamples whole comparison sets |
+| Two-way combined | Accounts for both levels simultaneously (Cameron et al., 2011) |
 
-https://onlinelibrary.wiley.com/doi/10.1111/1556-4029.70047  
-Directly quantifies how knowing one is in a test changes inconclusive rates in a real blind-embedded proficiency program (56.4% inconclusive when tests are discovered vs 39.3% when undiscovered), and explicitly frames this as a Hawthorne/“strategic examiner” effect on decision thresholds.
-
-https://www.sciencedirect.com/science/article/pii/S2589871X22000584?via%3Dihub  
-Argues that “inconclusive” decisions in firearms studies can hide or distort true error rates, and that because examiners know they are being tested, they likely shift behavior toward safer “inconclusive” calls very similar to that described by the Hawthorne effect.
-
-https://www.sciencedirect.com/science/article/pii/S0895435613003545?via%3Dihub  
-Argues that there is no single, unitary Hawthorne effect, but it does show that research participation itself can change people’s behavior in small, context-dependent ways, which is exactly the core idea behind the Hawthorne effect. Doesn’t specifically target forensic black-box studies.
-
-https://scholarlycommons.law.northwestern.edu/cgi/viewcontent.cgi?article=1023&context=facultyworkingpapers  
-Argues that well-designed, blind proficiency tests are essential for estimating real error rates in forensic disciplines, with an emphasis on behavior changes when people know they are being tested. Doesn’t specifically mention the Hawthorne effect, but directly describes it.
+**Key finding:** The two-way combined bootstrap is the only method that consistently achieves near-nominal 95% coverage for both estimands across all 48 scenarios.
 
 ---
 
-## Simulation 1 – Using Bernoulli Distribution to Quantify Hawthorne Effect
+## Repository Structure
 
-We used the 2024 bullets dataset as our real-data baseline and then layered resampling and a simple Hawthorne-effect simulation to study how test awareness affects estimated error rates and inconclusive rates, and how reliable different confidence interval (CI) procedures are when responses are clustered by examiner and by item set.
-
-We cleaned and combined the KQ and QQ response sheets and recoded each response into three outcome types (ID, Exclusion, Inconclusive). Using the ground truth from `Mating` (mated vs non-mated), we defined false positives as ID calls on non-mated comparisons and false negatives as Exclusion calls on mated comparisons.
-
-From the baseline data (n = 2884), we estimated:
-- FP rate = 0.0668 (128 FP)
-- FN rate = 0.0496 (48 FN)
-- Overall inconclusive rate = 0.409 (1179 inconclusive)
-
-We also saw inconclusives differed by truth:
-- 0.266 for same-source (mated)
-- 0.481 for different-source (non-mated)
-
-### CI Methods Implemented
-
-1. Naive nonparametric bootstrap (resample rows)
-2. Clustered bootstrap by examiner (AnonID)
-3. Clustered bootstrap by item sets (Cset)
-
-For FP rate:
-- Naive bootstrap 95% CI: 0.0557–0.0765  
-- Item-clustered CI: 0.0559–0.0786  
-- Examiner-clustered CI: 0.0383–0.1039  
-
-This suggests examiner-level clustering substantially increases uncertainty and that naive resampling can be overly optimistic when examiner effects induce correlation.
-
-### Hawthorne Simulation
-
-We simulated a “discovered/aware” condition by randomly labeling some part of the trials as discovered and then flipping a fraction of conclusive calls to inconclusive with probability delta = 0.25.
-
-Under this condition:
-- Inconclusive rate increased from 0.409 to 0.434 (1179 to 1252)
-- FP decreased from 0.0668 to 0.0652 (128 to 125)
-- FN decreased from 0.0496 to 0.0455 (48 to 44)
-
-Inconclusive rates increased within each truth category:
-- 0.266 → 0.300 (same-source)
-- 0.481 → 0.502 (different-source)
-
----
-
-## Simulation 2
-
-To estimate uncertainty in error rates without imposing parametric assumptions, we employed a nonparametric bootstrap framework tailored to the clustered structure of the study data. The dataset consists of repeated decisions nested within examiners (AnonID) and comparison sets (Cset), so standard i.i.d. resampling would underestimate variability.
-
-We generated B = 2000 bootstrap resamples and saved indices for reproducibility.
-
-### Bootstrap Methods
-
-- Row-level bootstrap  
-- Clustered bootstrap by examiner (AnonID)  
-- Clustered bootstrap by comparison set (Cset)  
-
-For each replicate:
-- Reconstruct dataset  
-- Compute inconclusive rate  
-- Compute definitive error rate  
-- Compute conditional error rates  
-
-Construct percentile-based 95% confidence intervals.
-
-All bootstrap resamples were generated and stored prior to any Hawthorne simulation.
-
-### Undiscovered Condition Simulation
-
-For each bootstrap replicate:
-- Compute observed inconclusive rate  
-- Reverse Hawthorne inflation  
-- Reassign a fraction of inconclusives to definitive decisions (ID, LeanID, Excl, LeanExcl)  
-- Apply Bernoulli draw with probability g  
-
-### Preliminary Results
-
-- Discovered condition produces ~11–12 percentage points higher inconclusive rates  
-- Hawthorne reduces false identifications by ~10 percentage points  
-- Observation reduces false exclusions (~2–3 percentage points)  
-- Effect robust to examiner-level and item-level dependence  
+```
+StatsCOMPSGroup1/
+│
+├── simulation/                       # Three-method simulation (naive, examiner, cset)
+│   ├── simulation_functions.R        # Core functions — source this from all scripts
+│   ├── scenarios_1_16.R              # Scenario runner: scenarios 1-16
+│   ├── scenarios_17_32.R             # Scenario runner: scenarios 17-32
+│   ├── scenarios_33_48.R             # Scenario runner: scenarios 33-48
+│   ├── run_1_16.sh                   # SLURM job array: scenarios 1-16
+│   ├── run_17_32.sh                  # SLURM job array: scenarios 17-32
+│   └── run_33_48.sh                  # SLURM job array: scenarios 33-48
+│
+├── simulation_combined/              # Four-method simulation (adds combined bootstrap)
+│   ├── combined_bootstrap.R          # Two-way combined bootstrap implementation
+│   ├── simulation_functions.R        # Core functions for combined runs
+│   ├── scenarios_1_16_combined.R     # Scenario runner: scenarios 1-16
+│   ├── scenarios_17_32_combined.R    # Scenario runner: scenarios 17-32
+│   ├── scenarios_33_48_combined.R    # Scenario runner: scenarios 33-48
+│   ├── run_combined_1_16.sh          # SLURM job array: scenarios 1-16
+│   ├── run_combined_17_32.sh         # SLURM job array: scenarios 17-32
+│   └── run_combined_33_48.sh         # SLURM job array: scenarios 33-48
+│
+├── results/
+│   ├── situation1_48_uncombined.csv  # Results: 3 methods x 48 scenarios
+│   ├── combined_situation1_48.csv    # Results: 4 methods x 48 scenarios (used in paper)
+│   └── compile into csv.Rmd          # Script to compile .rds outputs into CSVs
+│
+├── figures/
+│   ├── generate_plots_combined.R     # Script to regenerate all paper figures
+│   ├── visualization/                # Figures from three-method runs
+│   │   ├── fig1_coverage_by_quality_haw0.png
+│   │   ├── fig2_coverage_vs_hawthorne.png
+│   │   ├── fig3_ci_width_vs_hawthorne.png
+│   │   ├── fig4_heatmap_all_scenarios.png
+│   │   ├── fig5_heatmap_inc_rate.png
+│   │   ├── fig7_coverage_vs_width_scatter.png
+│   │   └── fig8_slope_hawthorne.png
+│   └── visualization_combined/       # All figures used in the paper (four-method)
+│       ├── fig1_coverage_by_quality_haw0.png
+│       ├── fig2_coverage_vs_hawthorne.png
+│       ├── fig3_ci_width_vs_hawthorne.png
+│       ├── fig4_heatmap_err_rate.png
+│       ├── fig5_heatmap_inc_rate.png
+│       ├── fig6_diverging_bar.png
+│       ├── fig7a_naive_only.png
+│       └── fig7b_all_methods.png
+│
+├── data/
+│   └── bullets_2024.xlsx             # Raw Bullet Black Box Study data
+│
+└── documents/
+    └── TeamContract.pdf
+```
 
 ---
 
-## Error Rate Case Bootstrap Results
+## The 48 Scenarios
 
-- By row  
-- By examiner  
-- By Cset  
+Scenarios cross three factors:
 
----
+| Factor | Levels |
+|---|---|
+| Case difficulty | Easy, Medium, Difficult, VeryDifficult |
+| Hawthorne effect | H = 0.0, 0.2, 0.5 |
+| Examiner quality | AA, BB, CC, CD |
 
-## Evaluation Methods
-
-Finding a new dataset and comparing it with our existing findings, justifying whether or not our results are applicable.
-
----
-
-## New Statistical Topic
-
-We will explore mixed-effects modeling to explicitly model dependence between observations. Unlike bootstrap methods that approximate uncertainty through resampling, hierarchical models estimate variability attributable to examiners and evidence items directly. This allows us to quantify how much of the variation in forensic decisions arises from examiner behavior versus evidence characteristics, and how the Hawthorne effect shifts decision thresholds.
-
-Link:  
-https://journal.r-project.org/articles/RJ-2023-015/
+**4 x 3 x 4 = 48 scenarios**, each run with M = 200 repetitions and B = 300 bootstrap resamples per repetition.
 
 ---
 
-## Timeline of the Project
+## How to Reproduce
 
-The schedule is intentionally made in a way in order to ensure that we complete the major components early. We want to allow sufficient time for revision and feedback before deadlines arrive.
+### Step 1 — Run the simulation on HPC
 
-### Week 7
-- Finalize topic and scope  
-- Complete proposal  
-- Implement proof-of-concept simulation  
-- Ensure reproducibility  
+```bash
+# Three-method runs (naive, examiner, cset)
+sbatch simulation/run_1_16.sh
+sbatch simulation/run_17_32.sh
+sbatch simulation/run_33_48.sh
 
-### Week 8
-- Meet with Amanda  
-- Decide final modeling strategy  
-- Plan next steps  
-- Begin simulation framework  
+# Four-method runs (adds combined bootstrap)
+sbatch simulation_combined/run_combined_1_16.sh
+sbatch simulation_combined/run_combined_17_32.sh
+sbatch simulation_combined/run_combined_33_48.sh
+```
 
-### Week 9
-- Continue simulation development  
-- Validate toy simulation  
-- Create exploratory plots  
+Each job saves one `.rds` file per scenario (e.g., `result_s1.rds`).
 
-### Week 10
-- Literature review  
-- Finalize simulation structure  
-- Produce initial figures  
+### Step 2 — Compile results into CSV
 
-### Break
-- Review progress  
-- Clean code  
-- Organize results  
-- Draft methods  
+```r
+library(purrr)
 
-### Week 1
-- Write Results section  
-- Interpret FP/FN/inconclusive shifts  
+# Three-method results
+files <- list.files(pattern = "^result_s[0-9]+\\.rds$")
+results <- map_dfr(files, ~ readRDS(.x)$table)
+write.csv(results, "results/situation1_48_uncombined.csv", row.names = FALSE)
 
-### Week 2
-- Continue writing  
-- Meet with Amanda  
-- Revise  
+# Four-method (combined) results
+files <- list.files(pattern = "^result_combined_s[0-9]+\\.rds$")
+results <- map_dfr(files, ~ readRDS(.x)$table)
+write.csv(results, "results/combined_situation1_48.csv", row.names = FALSE)
+```
 
-### Week 3
-- Complete rough draft  
-- Improve readability  
+### Step 3 — Generate figures
 
-### Week 4
-- Edit based on feedback  
-- Strengthen argument  
-
-### Week 5
-- Final revisions  
-- Begin poster design  
-
-### Week 6
-- Refine poster  
-- Obtain feedback  
-
-### Week 7
-- Poster presentation  
-- Incorporate feedback  
-
-### Week 8
-- Peer review  
-- Finalize figures  
-
-### Week 9
-- Final editing and formatting  
-
-### Week 10
-- Submit final paper, DONE!
+```r
+source("figures/generate_plots_combined.R")
+```
 
 ---
 
-## Resources
+## Model Parameters
 
-Dataset to be using – 2024 Bullet Dataset.  
-We might use other datasets or papers if we need more extension to our project.
+All parameters are hardcoded in `simulation/simulation_functions.R`, estimated from the Bullet Black Box Study:
+
+| Parameter | Value | Description |
+|---|---|---|
+| sigma_exam,inc | 1.1677 | Examiner SD — inconclusive model |
+| sigma_cset,inc | 0.8605 | Cset SD — inconclusive model |
+| sigma_exam,err | 0.9655 | Examiner SD — error model |
+| sigma_cset,err | ~0 | Cset SD — error model (negligible) |
+
+---
+
+
+GitHub: https://github.com/panditk455/StatsCOMPSGroup1
