@@ -1,7 +1,9 @@
 # Getting Uncertainty Right: Bootstrap Methods for Clustered Forensic Firearm Examination Data
 
-**Carleton College Statistics COMPS — Group 1**
+**Carleton College Statistics COMPS - Group 1**
+
 Kritika Pandit, Cici Wang, Nicholas Chang
+
 Advisor: Prof. Amanda Luby | Spring 2026
 
 ---
