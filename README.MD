@@ -55,10 +55,10 @@ All fixed-effect coefficients and variance components are hardcoded in `simulati
 
 For each simulated dataset, four bootstrap confidence intervals are constructed using B = 300 resamples:
 
-1. **Naive** — resamples individual examiner-cset rows with replacement, treating all observations as independent.
-2. **Examiner-cluster** — resamples whole examiners with replacement, preserving within-examiner dependence.
-3. **Cset-cluster** — resamples whole comparison sets with replacement, preserving within-item dependence.
-4. **Two-way combined** — combines the three distributions above as:
+1. **Naive** - resamples individual examiner-cset rows with replacement, treating all observations as independent.
+2. **Examiner-cluster** - resamples whole examiners with replacement, preserving within-examiner dependence.
+3. **Cset-cluster** - resamples whole comparison sets with replacement, preserving within-item dependence.
+4. **Two-way combined** - combines the three distributions above as:
    `theta*_combined = theta*_exam + theta*_cset - theta*_naive`
    This accounts for both clustering levels simultaneously (Cameron, Gelbach & Miller, 2011).
 
